@@ -52,7 +52,7 @@ jobs:
           chmod +x "$GOOSE_PATH"
           echo "GOOSE_BIN=$PWD/$GOOSE_PATH" >> $GITHUB_ENV
           echo "PATH=$PWD/$(dirname "$GOOSE_PATH"):$PATH" >> $GITHUB_ENV
-          goose version
+          "$GOOSE_PATH" version
 
       - name: Build GooseCalc APK
         env:
