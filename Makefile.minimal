@@ -1,0 +1,58 @@
+APPNAME     = goosecalc
+PACKAGENAME = com.goosecalc.app
+
+RAWDRAWANDROID_COMMIT = 2220ef4
+TERMUX_NDK_TAG        = android-ndk
+
+# Minimal build: only minimal_main.c + glue
+SRC := minimal_main.c
+
+CFLAGS  += -Isrc
+
+# Override NDK paths for Termux ndk-multilib
+NDK := /data/data/com.termux/files/usr
+OS_NAME := linux-aarch64
+ANDROIDVERSION := 29
+ANDROIDTARGET  := 29
+
+# Rawdrawandroid is in subdirectory
+RAWDRAWANDROID := rawdrawandroid
+
+# Build tools
+BUILD_TOOLS := /data/data/com.termux/files/usr/bin
+
+# Only build for arm64
+DEFAULT_TARGETS = $(BUILD_DIR)/makecapk/lib/arm64-v8a/lib$(APPNAME).so
+
+# Sysroot includes and libs
+CFLAGS += -I$(NDK)/include -I$(NDK)/include/android
+LDFLAGS += -L$(NDK)/aarch64-linux-android/lib
+
+# Default target builds the APK
+all: makecapk.apk
+
+include rawdrawandroid/Makefile
+
+# Override compiler paths
+CC_ARM64 := $(NDK)/bin/aarch64-linux-android-clang
+# Disable other architectures
+$(BUILD_DIR)/makecapk/lib/armeabi-v7a/lib$(APPNAME).so:
+	@echo "Skipping arm32 build"
+$(BUILD_DIR)/makecapk/lib/x86/lib$(APPNAME).so:
+	@echo "Skipping x86 build"
+$(BUILD_DIR)/makecapk/lib/x86_64/lib$(APPNAME).so:
+	@echo "Skipping x86_64 build"
+
+# Fix manifest generation
+$(BUILD_DIR)/AndroidManifest.xml: AndroidManifest.xml.template Sources/res/values/strings.xml
+	@mkdir -p $(BUILD_DIR)
+	PACKAGENAME=$(PACKAGENAME) ANDROIDVERSION=$(ANDROIDVERSION) ANDROIDTARGET=$(ANDROIDTARGET) APPNAME=$(APPNAME) LABEL=$(APPNAME) \
+	envsubst '$$ANDROIDTARGET $$ANDROIDVERSION $$APPNAME $$PACKAGENAME $$LABEL' \
+	< $< > $@
+
+# APK output path
+APK_PATH = $(BUILD_DIR)/$(APKFILE)
+
+test-minimal:
+	@test -s $(APK_PATH) || (echo "no APK at $(APK_PATH), aborting"; exit 1)
+	@bash scripts/version_apk.sh
