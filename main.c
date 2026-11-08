@@ -218,7 +218,7 @@ void HandleResume() {
 
 void HandleKey( int keycode, int bDown )
 {
-    if( keycode == 4 ) {
+    if( keycode == 4 && bDown ) {
         if (!goose_handle_back()) {
             ANativeActivity_finish(gapp->activity);
         }
@@ -288,12 +288,19 @@ int main(int argc, char** argv)
     {
         // Exit cleanly when Android requests destroy (prevents crash on exit)
         if (gapp && gapp->destroyRequested) break;
-        // Don't render if window not ready (e.g. during rotation)
-        if (gapp && gapp->window == NULL) { usleep(10000); continue; }
 
+        // ALWAYS drain the ALooper — this delivers APP_CMD_INIT_WINDOW,
+        // APP_CMD_RESUME, APP_CMD_STOP, APP_CMD_PAUSE. Skipping it while
+        // window == NULL caused the background->foreground freeze: the
+        // glue's UI-thread callbacks block waiting for the looper to be
+        // drained, and the looper can only be drained by CNFGHandleInput().
+        // CNFGHandleInput() is non-blocking (pollOnce timeout 0), so this
+        // is safe while backgrounded or during rotation.
         CNFGHandleInput();
 
-        if( suspended ) { usleep(50000); continue; }
+        // Render only when the window is actually ready
+        if (gapp && gapp->window == NULL) { usleep(10000); continue; }
+        if (suspended)                    { usleep(50000); continue; }
 
         CNFGClearFrame();
         CNFGGetDimensions( &screenx, &screeny );
