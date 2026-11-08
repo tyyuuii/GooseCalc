@@ -46,8 +46,12 @@ jobs:
         run: |
           wget -q https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz
           tar -xzf goose-v2026.4-linux-x64.tar.gz
-          echo "GOOSE_BIN=$PWD/goose-v2026.4-linux-x64/bin/goose" >> $GITHUB_ENV
-          echo "PATH=$PWD/goose-v2026.4-linux-x64/bin:$PATH" >> $GITHUB_ENV
+          # Find the goose binary wherever it landed inside the archive
+          GOOSE_PATH=$(find . -name goose -type f -executable 2>/dev/null | head -1)
+          echo "Found goose at: $GOOSE_PATH"
+          chmod +x "$GOOSE_PATH"
+          echo "GOOSE_BIN=$PWD/$GOOSE_PATH" >> $GITHUB_ENV
+          echo "PATH=$PWD/$(dirname "$GOOSE_PATH"):$PATH" >> $GITHUB_ENV
           goose version
 
       - name: Build GooseCalc APK
