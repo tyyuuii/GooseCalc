@@ -21,7 +21,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip cmake g++ make libssl-dev envsubst
+          sudo apt-get install -y wget unzip cmake g++ make libssl-dev gettext-base
 
       - name: Download Android NDK
         run: |
@@ -36,6 +36,7 @@ jobs:
           unzip -q commandlinetools-linux-11076708_latest.zip -d cmdline-tools
           mv cmdline-tools/cmdline-tools cmdline-tools/latest
           echo "ANDROID_HOME=$PWD/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$PWD/android-sdk" >> $GITHUB_ENV
           echo "PATH=$PWD/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
           mkdir -p $ANDROID_HOME
           mv cmdline-tools $ANDROID_HOME/cmdline-tools
@@ -52,13 +53,16 @@ jobs:
       - name: Build GooseCalc APK
         env:
           NDK: ${{ env.NDK_HOME }}
+          ANDROID_NDK_HOME: ${{ env.NDK_HOME }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
           OS_NAME: linux-x86_64
-          BUILD_TOOLS: ${{ env.ANDROID_HOME }}/build-tools/34.0.0
           GOOSE: ${{ env.GOOSE_BIN }}
         run: |
-          export ANDROID_NDK_HOME=$NDK
-          export PATH=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+          export ANDROID_NDK_HOME="$NDK"
+          export ANDROID_HOME="$ANDROID_HOME"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           make clean
           make CC_ARM64="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
 
