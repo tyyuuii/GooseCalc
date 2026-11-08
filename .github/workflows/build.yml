@@ -25,8 +25,8 @@ jobs:
 
       - name: Download Android NDK
         run: |
-          wget -q https://dl.google.com/android/repository/android-ndk-r27b-linux-x86_64.zip
-          unzip -q android-ndk-r27b-linux-x86_64.zip
+          wget -q https://dl.google.com/android/repository/android-ndk-r27b-linux.zip
+          unzip -q android-ndk-r27b-linux.zip
           echo "NDK_HOME=$PWD/android-ndk-r27b" >> $GITHUB_ENV
 
       - name: Download Android command-line tools
