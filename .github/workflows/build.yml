@@ -29,27 +29,16 @@ jobs:
           unzip -q android-ndk-r27b-linux.zip
           echo "NDK_HOME=$PWD/android-ndk-r27b" >> $GITHUB_ENV
 
-      - name: Download Android command-line tools
+      - name: Install Android SDK platform (system SDK)
         run: |
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          mkdir -p cmdline-tools
-          unzip -q commandlinetools-linux-11076708_latest.zip -d cmdline-tools
-          mv cmdline-tools/cmdline-tools cmdline-tools/latest
-          echo "ANDROID_HOME=$PWD/android-sdk" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$PWD/android-sdk" >> $GITHUB_ENV
-          echo "PATH=$PWD/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "build-tools;33.0.0" "platforms;android-29" "platforms;android-33" > /dev/null 2>&1
-          # Verify android-29 platform was installed
-          ls $ANDROID_HOME/platforms/android-29/android.jar
-          # Find the actual build-tools directory installed
-          BT_VERSION=$(ls $ANDROID_HOME/build-tools/ | head -1)
-          echo "BUILD_TOOLS_DIR=$ANDROID_HOME/build-tools/$BT_VERSION" >> $GITHUB_ENV
+          sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-29" > /dev/null 2>&1 || true
+          # Also accept all licenses
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses > /dev/null 2>&1 || true
 
       - name: Download prebuilt Goose compiler
         run: |
           wget -q https://github.com/aardappel/goose/releases/download/v2026.4/goose-v2026.4-linux-x64.tar.gz
           tar -xzf goose-v2026.4-linux-x64.tar.gz
-          # Find the goose binary wherever it landed inside the archive
           GOOSE_PATH=$(find . -name goose -type f -executable 2>/dev/null | head -1)
           echo "Found goose at: $GOOSE_PATH"
           chmod +x "$GOOSE_PATH"
@@ -61,19 +50,15 @@ jobs:
         env:
           NDK: ${{ env.NDK_HOME }}
           ANDROID_NDK_HOME: ${{ env.NDK_HOME }}
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
-          ANDROIDSDK: ${{ env.ANDROID_HOME }}
-          BUILD_TOOLS: ${{ env.BUILD_TOOLS_DIR }}
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
           OS_NAME: linux-x86_64
           GOOSE: ${{ env.GOOSE_BIN }}
         run: |
           export ANDROID_NDK_HOME="$NDK"
-          export ANDROID_HOME="$ANDROID_HOME"
-          export ANDROID_SDK_ROOT="$ANDROID_HOME"
-          export ANDROIDSDK="$ANDROID_HOME"
-          export BUILD_TOOLS="$BUILD_TOOLS_DIR"
-          export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
+          export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
           make clean
           make CC_ARM64="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
 
