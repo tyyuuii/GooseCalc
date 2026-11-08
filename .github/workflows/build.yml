@@ -62,12 +62,16 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.NDK_HOME }}
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+          ANDROIDSDK: ${{ env.ANDROID_HOME }}
+          BUILD_TOOLS: ${{ env.ANDROID_HOME }}/build-tools/34.0.0
           OS_NAME: linux-x86_64
           GOOSE: ${{ env.GOOSE_BIN }}
         run: |
           export ANDROID_NDK_HOME="$NDK"
           export ANDROID_HOME="$ANDROID_HOME"
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export ANDROIDSDK="$ANDROID_HOME"
+          export BUILD_TOOLS="$ANDROID_HOME/build-tools/34.0.0"
           export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           make clean
           make CC_ARM64="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
