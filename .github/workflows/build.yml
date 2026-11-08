@@ -38,7 +38,9 @@ jobs:
           echo "ANDROID_HOME=$PWD/android-sdk" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$PWD/android-sdk" >> $GITHUB_ENV
           echo "PATH=$PWD/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "build-tools;33.0.0" "platforms;android-29" "platforms;android-33"
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_HOME "platform-tools" "build-tools;33.0.0" "platforms;android-29" "platforms;android-33" > /dev/null 2>&1
+          # Verify android-29 platform was installed
+          ls $ANDROID_HOME/platforms/android-29/android.jar
           # Find the actual build-tools directory installed
           BT_VERSION=$(ls $ANDROID_HOME/build-tools/ | head -1)
           echo "BUILD_TOOLS_DIR=$ANDROID_HOME/build-tools/$BT_VERSION" >> $GITHUB_ENV
