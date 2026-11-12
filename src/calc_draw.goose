@@ -16,13 +16,31 @@ fn text_centered_in(r: const Rect&, s: u8[>..], scale: i32) {
     draw_text(cx as i32, cy as i32, copy(s), scale);
 }
 
+// Draw a thick horizontal line by drawing multiple parallel segments
+fn draw_thick_segment_h(x1: i32, x2: i32, y: i32, thickness: i32) {
+    var t: i32 = 0;
+    while t < thickness {
+        draw_segment(x1, y + t, x2, y + t);
+        t += 1;
+    }
+}
+
+// Draw a thick vertical line by drawing multiple parallel segments
+fn draw_thick_segment_v(y1: i32, y2: i32, x: i32, thickness: i32) {
+    var t: i32 = 0;
+    while t < thickness {
+        draw_segment(x + t, y1, x + t, y2);
+        t += 1;
+    }
+}
+
 fn draw_button(lay: const Layout&, i: i32, pressed: bool) {
     let r = &lay.buttons[i];
     set_color(if pressed { 0x808080FF } else { 0x404040FF });
     draw_rect(r.x1 as i32, r.y1 as i32, r.x2 as i32, r.y2 as i32);
     set_color(0xFFFFFFFF);
-    draw_segment(r.x1 as i32, r.y1 as i32, r.x2 as i32, r.y1 as i32);
-    draw_segment(r.x1 as i32, r.y1 as i32, r.x1 as i32, r.y2 as i32);
+    draw_thick_segment_h(r.x1 as i32, r.x2 as i32, r.y1 as i32, 3);
+    draw_thick_segment_v(r.y1 as i32, r.y2 as i32, r.x1 as i32, 3);
     let lbl = label_for(i);
     if lbl.len > 0 {
         text_centered_in(r, copy(lbl), SCALE_BUTTON);
@@ -178,18 +196,20 @@ fn draw_sudoku(lay: const Layout&, sudoku: const SudokuGame&, highlight: i32) {
     set_color(0x000000FF);
     draw_rect(board_x as i32, board_y as i32, (board_x + board_size) as i32, (board_y + board_h) as i32);
 
-    // Grid lines — thicker every 3 cells
+    // Grid lines — major lines (every 3 cells) are thicker
     var i = 0;
     while i < 10 {
         let x = board_x + (i as f32) * cell_w;
         let y = board_y + (i as f32) * cell_h;
         if i % 3 == 0 {
             set_color(0xFFFFFFFF);
+            draw_thick_segment_v(board_y as i32, (board_y + board_h) as i32, x as i32, 4);
+            draw_thick_segment_h(board_x as i32, (board_x + board_size) as i32, y as i32, 4);
         } else {
             set_color(0x606060FF);
+            draw_thick_segment_v(board_y as i32, (board_y + board_h) as i32, x as i32, 2);
+            draw_thick_segment_h(board_x as i32, (board_x + board_size) as i32, y as i32, 2);
         }
-        draw_segment(x as i32, board_y as i32, x as i32, (board_y + board_h) as i32);
-        draw_segment(board_x as i32, y as i32, (board_x + board_size) as i32, y as i32);
         i += 1;
     }
 
@@ -280,10 +300,10 @@ fn draw_sudoku(lay: const Layout&, sudoku: const SudokuGame&, highlight: i32) {
     mstr.push('/'); mstr.push('3');
     draw_text((w - 110) as i32, 20, copy(mstr), 4);
 
-    // Separator line between board and buttons
+    // Separator line between board and buttons (thick)
     let btn_area_top = board_y + board_h;
     set_color(0xFFFFFFFF);
-    draw_segment(0, btn_area_top as i32, w, btn_area_top as i32);
+    draw_thick_segment_h(0, w, btn_area_top as i32, 4);
 
     // Sudoku buttons — square cells, centered below board
     let btn_area_h = (h as f32) - btn_area_top;
@@ -339,12 +359,12 @@ fn draw_difficulty_dialog(w: i32, h: i32, sudoku: const SudokuGame&) {
     set_color(0x00000088);
     draw_rect(0, 0, w, h);
 
-    // Dialog panel
+    // Dialog panel border (thick)
     set_color(0x202020FF);
     draw_rect(dlg_x as i32, dlg_y as i32, (dlg_x + dlg_w) as i32, (dlg_y + dlg_h) as i32);
     set_color(0xFFFFFFFF);
-    draw_segment(dlg_x as i32, dlg_y as i32, (dlg_x + dlg_w) as i32, dlg_y as i32);
-    draw_segment(dlg_x as i32, dlg_y as i32, dlg_x as i32, (dlg_y + dlg_h) as i32);
+    draw_thick_segment_h(dlg_x as i32, (dlg_x + dlg_w) as i32, dlg_y as i32, 3);
+    draw_thick_segment_v(dlg_y as i32, (dlg_y + dlg_h) as i32, dlg_x as i32, 3);
 
     // Title
     set_color(0xFFFFFF00);
