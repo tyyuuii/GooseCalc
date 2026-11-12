@@ -17,6 +17,7 @@ GooseCalc is an Android calculator built entirely in the [Goose](https://github.
 * Highlights the pressed button and plays a short click sound
 * Catches native crashes (SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL) and writes a readable crash log to **external storage** so you can retrieve it with any file manager — no ADB required
 * Shows an on-screen crash viewer on relaunch that you tap to dismiss
+* **Sudoku game mode** — enter `69 + 420 / 69 =` on the calculator to unlock a 9×9 Sudoku puzzle. Tap cells to select, use number buttons 1–9 to fill, `CLR` to clear, `RST` to reset, `EXIT` to return to calculator
 
 ## Architecture
 

@@ -50,6 +50,18 @@ fn label_for(i: i32) -> u8[>..] {
     }
 }
 
+// Sudoku mode button labels (repurposes the calculator button grid)
+fn label_for_sudoku(i: i32) -> u8[>..] {
+    match i {
+        0  => "1",  1  => "2",  2  => "3",  3  => "4",
+        4  => "5",  5  => "6",  6  => "7",  7  => "8",
+        8  => "9",  9  => "",   10 => "",   11 => "",
+        12 => "CLR",13 => "",   14 => "",   15 => "",
+        16 => "RST",17 => "EXIT",
+        _  => "",
+    }
+}
+
 // Build "left op right = result" from an explicit snapshot. The snapshot is
 // taken BEFORE evaluate() clears the expression state (evaluate() sets
 // has_expr=false), so history keeps the original expression.

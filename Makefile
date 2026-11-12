@@ -8,6 +8,7 @@ SRC:=main.c crash.c
 
 ANDROIDVERSION?=29
 ANDROIDTARGET?=29
+MINSDKVERSION?=23
 
 TARGETS:=makecapk/lib/arm64-v8a/lib$(APPNAME).so
 

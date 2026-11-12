@@ -25,6 +25,7 @@ make \
   CC_ARM64=/data/data/com.termux/files/usr/bin/aarch64-linux-android-clang \
   ANDROIDVERSION=29 \
   ANDROIDTARGET=29 \
+  MINSDKVERSION=23 \
   CFLAGS_ARM64="-target aarch64-linux-android29"
 ```
 

@@ -15,6 +15,7 @@ make \
   CC_ARM64=/data/data/com.termux/files/usr/bin/aarch64-linux-android-clang \
   ANDROIDVERSION=29 \
   ANDROIDTARGET=29 \
+  MINSDKVERSION=23 \
   CFLAGS_ARM64="-target aarch64-linux-android29"
 ```
 
@@ -38,6 +39,9 @@ Edit `PACKAGENAME` in `Makefile` and update the manifest template.
 
 ### Changing target SDK
 Edit `ANDROIDVERSION` and `ANDROIDTARGET` in Makefile or pass via environment.
+
+### Changing minimum SDK
+Edit `MINSDKVERSION` in Makefile or pass via environment. Defaults to `23` (Android 6). The compile target (`ANDROIDVERSION`) can stay at `29` (Android 10) — `minSdkVersion` and the compile target are decoupled.
 
 ## Signing Key Management
 

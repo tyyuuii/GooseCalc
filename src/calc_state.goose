@@ -248,3 +248,167 @@ fn get_display_value(state: const CalcState&) -> f64 {
 fn has_error(state: const CalcState&) -> bool {
     return state.error;
 }
+
+// === Sudoku game logic ===
+
+fn sudoku_row_contains(values: const i32[81], row: i32, val: i32) -> bool {
+    var c = 0;
+    while c < 9 {
+        if values[row * 9 + c] == val { return true; }
+        c += 1;
+    }
+    return false;
+}
+
+fn sudoku_col_contains(values: const i32[81], col: i32, val: i32) -> bool {
+    var r = 0;
+    while r < 9 {
+        if values[r * 9 + col] == val { return true; }
+        r += 1;
+    }
+    return false;
+}
+
+fn sudoku_box_contains(values: const i32[81], idx: i32, val: i32) -> bool {
+    let r = idx / 9;
+    let c = idx % 9;
+    let br = (r / 3) * 3;
+    let bc = (c / 3) * 3;
+    var rr = br;
+    while rr < br + 3 {
+        var cc = bc;
+        while cc < bc + 3 {
+            if values[rr * 9 + cc] == val { return true; }
+            cc += 1;
+        }
+        rr += 1;
+    }
+    return false;
+}
+
+fn sudoku_box_contains_excl(values: const i32[81], idx: i32, val: i32) -> bool {
+    let r = idx / 9;
+    let c = idx % 9;
+    let br = (r / 3) * 3;
+    let bc = (c / 3) * 3;
+    var rr = br;
+    while rr < br + 3 {
+        var cc = bc;
+        while cc < bc + 3 {
+            let i = rr * 9 + cc;
+            if i != idx && values[i] == val { return true; }
+            cc += 1;
+        }
+        rr += 1;
+    }
+    return false;
+}
+
+fn sudoku_is_valid(values: const i32[81], idx: i32) -> bool {
+    let val = values[idx];
+    if val == 0 { return true; }
+    let r = idx / 9;
+    let c = idx % 9;
+    var ci = 0;
+    while ci < 9 {
+        let i = r * 9 + ci;
+        if i != idx && values[i] == val { return false; }
+        ci += 1;
+    }
+    var ri = 0;
+    while ri < 9 {
+        let i = ri * 9 + c;
+        if i != idx && values[i] == val { return false; }
+        ri += 1;
+    }
+    return !sudoku_box_contains_excl(values, idx, val);
+}
+
+fn sudoku_is_solved(values: const i32[81], fixed: const u8[81]) -> bool {
+    // All cells filled
+    var i = 0;
+    while i < 81 {
+        if values[i] == 0 { return false; }
+        i += 1;
+    }
+    // No duplicates anywhere
+    i = 0;
+    while i < 81 {
+        if !sudoku_is_valid(values, i as i32) { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+// === Sudoku generator: backtracking solver ===
+
+// Find first empty cell (value == 0), return index or -1 if none
+fn sudoku_find_empty(values: const i32[81]) -> i32 {
+    var i = 0;
+    while i < 81 {
+        if values[i] == 0 { return i as i32; }
+        i += 1;
+    }
+    return -1;
+}
+
+// Recursive backtracking solver. Returns true when grid is solved.
+// The grid is modified in place. Uses `rng` to randomize number order so
+// each generated puzzle is different.
+recursive fn sudoku_solve(values: i32[81]&, rng: SimpleRng&) -> bool {
+    let idx = sudoku_find_empty(values);
+    if idx == -1 { return true; }  // no empty cells = solved
+
+    // Build a shuffled list of numbers 1..9 using the RNG
+    var nums: i32[9] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    var k = 8;
+    while k > 0 {
+        let j = (rng_next(rng) as i64 % (k + 1) as i64) as i32;
+        let tmp = nums[k];
+        nums[k] = nums[j];
+        nums[j] = tmp;
+        k -= 1;
+    }
+
+    var n = 0;
+    while n < 9 {
+        let num = nums[n];
+        values[idx] = num;
+        if sudoku_is_valid(values, idx as i32) {
+            if sudoku_solve(values, rng) { return true; }
+        }
+        values[idx] = 0;
+        n += 1;
+    }
+    return false;
+}
+
+// Count solutions up to `limit` (used to verify unique solution after cell removal).
+// Returns the count (capped at `limit`).
+recursive fn sudoku_count_solutions(values: i32[81]&, limit: i32) -> i32 {
+    if limit <= 0 { return limit; }
+    let idx = sudoku_find_empty(values);
+    if idx == -1 { return 1; }  // found one complete solution
+
+    var count: i32 = 0;
+    var num: i32 = 1;
+    while num <= 9 && count < limit {
+        values[idx] = num;
+        if sudoku_is_valid(values, idx as i32) {
+            count += sudoku_count_solutions(values, limit - count);
+        }
+        values[idx] = 0;
+        num += 1;
+    }
+    return count;
+}
+
+// Check if removing cell at `idx` still leaves a unique solution.
+// Returns true if the puzzle with that cell removed has exactly one solution.
+fn sudoku_removal_keeps_unique(values: i32[81]&, idx: i32) -> bool {
+    let saved = values[idx];
+    values[idx] = 0;
+    let count = sudoku_count_solutions(values, 2);
+    values[idx] = saved;
+    return count == 1;
+}
