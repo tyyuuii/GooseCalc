@@ -7,21 +7,28 @@ import calc_layout;
 import calc_hit;
 import calc_draw;
 import calc_dispatch;
+import fbw_bridge;
+import fbw_core;
+import fbw_mobile;
 
 var g_state: CalcState = new_state();
 var g_history: History = new_history();
 var g_ui: UIState = new_ui();
 var g_show_crash: bool = false;
+var g_booted: bool = false;
 
-// === Sudoku game mode ===
-var g_game_mode: i32 = 0;          // 0 = calculator, 1 = sudoku
+// === Game modes: 0 = calculator, 1 = sudoku, 2 = fractal block world ===
+var g_game_mode: i32 = 0;
 var g_sudoku: SudokuGame = new_sudoku();
-var g_cheat_progress: i32 = 0;     // cheat code sequence progress
+var g_cheat_progress: i32 = 0;
+var g_fbw_progress: i32 = 0;
 
-// Cheat sequence: 6, 9, +, 4, 2, 0, /, 6, 9, =
-// Button indices: 6→digit 6, 2→digit 9, 15→+, 4→digit 4, 9→digit 2, 12→digit 0,
-//                 3→/, 6→digit 6, 2→digit 9, 14→=
+// Sudoku cheat sequence: 6, 9, +, 4, 2, 0, /, 6, 9, =
 const CHEAT_SEQ: i32[10] = [6, 2, 15, 4, 9, 12, 3, 6, 2, 14];
+
+// Fractal Block World cheat sequence: 1, 0, +, 1, 6, 9, =, =
+// Button indices: 8->1, 12->0, 15->+, 8->1, 6->6, 2->9, 14->=, 14->=
+const FBW_SEQ: i32[8] = [8, 12, 15, 8, 6, 2, 14, 14];
 
 fn sudoku_set_cell(digit: i32) {
     if g_sudoku.solved { return; }
@@ -87,16 +94,62 @@ fn check_cheat(btn: i32) -> bool {
     return false;
 }
 
-fn goose_init(argc: i32, argv: u64) {
+fn check_fbw_cheat(btn: i32) -> bool {
+    if btn == FBW_SEQ[g_fbw_progress] {
+        g_fbw_progress += 1;
+        if g_fbw_progress >= 8 {
+            g_fbw_progress = 0;
+            return true;
+        }
+    } else {
+        g_fbw_progress = 0;
+        if btn == FBW_SEQ[0] {
+            g_fbw_progress = 1;
+        }
+    }
+    return false;
+}
+
+fn ensure_booted() {
+    if g_booted { return; }
+    g_booted = true;
     g_show_crash = crash_len() > 0;
     g_history = history_load();
-    // Start with difficulty dialog showing
     g_sudoku.showing_difficulty = true;
     g_sudoku.game_over = false;
     g_sudoku.mistakes = 0;
 }
 
+export fn goose_handle_pointer(x: i32, y: i32, pid: i32, ev_type: i32) -> i32 {
+    ensure_booted();
+    if g_game_mode == 2 {
+        fbw_mobile_pointer(x, y, pid, ev_type);
+        if fbw_should_exit_to_calc() != 0 {
+            fbw_clear_exit_flag();
+            g_game_mode = 0;
+            fbw_set_orientation(0);
+            g_ui.layout = empty_layout();
+        }
+        return 1;
+    }
+    if ev_type == 1 {
+        return goose_handle_touch(x, y, 1);
+    }
+    return 1;
+}
+
 export fn goose_handle_touch(x: i32, y: i32, bDown: i32) -> i32 {
+    ensure_booted();
+    if g_game_mode == 2 {
+        fbw_mobile_pointer(x, y, 0, if bDown != 0 { 1 } else { 0 });
+        if fbw_should_exit_to_calc() != 0 {
+            fbw_clear_exit_flag();
+            g_game_mode = 0;
+            fbw_set_orientation(0);
+            g_ui.layout = empty_layout();
+        }
+        return 1;
+    }
     if bDown == 0 { return 1; }
     let fx = x as f32;
     let fy = y as f32;
@@ -238,6 +291,17 @@ export fn goose_handle_touch(x: i32, y: i32, bDown: i32) -> i32 {
     if btn < 0 { return 1; }
 
     // Cheat code detection (only in calculator mode)
+    if check_fbw_cheat(btn) {
+        g_game_mode = 2;
+        g_ui.pressed = -1;
+        g_ui.flash = 0;
+        g_ui.layout = empty_layout();
+        fbw_set_orientation(1);
+        fbw_mobile_enter();
+        fbw_sound_fx(4);
+        return 1;
+    }
+
     if check_cheat(btn) {
         g_game_mode = 1;
         g_sudoku.showing_difficulty = true;   // show difficulty picker first
@@ -255,6 +319,7 @@ export fn goose_handle_touch(x: i32, y: i32, bDown: i32) -> i32 {
 }
 
 export fn goose_draw() {
+    ensure_booted();
     let w = screen_w();
     let h = screen_h();
     if w > 1 && h > 1 && (g_ui.layout.width != w || g_ui.layout.height != h) {
@@ -265,7 +330,19 @@ export fn goose_draw() {
         return;
     }
 
-    // Tick flash countdown (works in both modes)
+    // === Fractal Block World mode (horizontal mobile 3D + touch controls) ===
+    if g_game_mode == 2 {
+        fbw_mobile_tick_and_draw(w, h);
+        if fbw_should_exit_to_calc() != 0 {
+            fbw_clear_exit_flag();
+            g_game_mode = 0;
+            fbw_set_orientation(0);
+            g_ui.layout = empty_layout();
+        }
+        return;
+    }
+
+    // Tick flash countdown (calculator & sudoku)
     var highlight: i32 = -1;
     if g_ui.flash > 0 && g_ui.pressed >= 0 {
         highlight = g_ui.pressed;
@@ -291,6 +368,15 @@ export fn goose_draw() {
 }
 
 export fn goose_handle_back() -> i32 {
+    if g_game_mode == 2 {
+        let st = core();
+        if st.screen != SCREEN_PLAY {
+            st.screen = SCREEN_PLAY;
+        } else {
+            st.screen = SCREEN_PAUSE;
+        }
+        return 1;
+    }
     if g_game_mode == 1 {
         if g_sudoku.showing_difficulty || g_sudoku.game_over {
             // Can't back out of difficulty dialog
@@ -306,8 +392,4 @@ export fn goose_handle_back() -> i32 {
 
 export fn goose_force_resize() {
     g_ui.layout = empty_layout();
-}
-
-fn goose_exit() {
-    history_save(g_history);
 }

@@ -5,15 +5,18 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <time.h>
 #include "os_generic.h"
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
 #include <android_native_app_glue.h>
 #include <android/log.h>
 #include <android/sensor.h>
+#include <jni.h>
 #include "CNFGAndroid.h"
 #include "crash.h"
 #include "calc_main.h"
+#include "fbw_gl.h"
 
 #define CNFG_IMPLEMENTATION
 #include "CNFG.h"
@@ -131,6 +134,62 @@ void sound_click(void) {
     }
 }
 
+static struct timespec g_boot_ts;
+static int g_boot_ts_init = 0;
+
+__attribute__((visibility("default"))) int fbw_now_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (!g_boot_ts_init) {
+        g_boot_ts = now;
+        g_boot_ts_init = 1;
+        return 0;
+    }
+    long sec = (long)(now.tv_sec - g_boot_ts.tv_sec);
+    long nsec = (long)(now.tv_nsec - g_boot_ts.tv_nsec);
+    return (int)(sec * 1000L + nsec / 1000000L);
+}
+
+__attribute__((visibility("default"))) void fbw_sound_fx(int kind) {
+    // Reuse low-latency OpenSLES click synthesizer with safe non-blocking trigger
+    (void)kind;
+    sound_click();
+}
+
+// Safely switch Android NativeActivity orientation via JNI:
+// landscape != 0 -> SCREEN_ORIENTATION_SENSOR_LANDSCAPE (6)
+// landscape == 0 -> SCREEN_ORIENTATION_UNSPECIFIED (-1)
+__attribute__((visibility("default"))) void fbw_set_orientation(int landscape) {
+    if (!gapp || !gapp->activity || !gapp->activity->vm || !gapp->activity->clazz) return;
+    JavaVM *vm = gapp->activity->vm;
+    JNIEnv *env = NULL;
+    int attached = 0;
+    jint res = (*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6);
+    if (res == JNI_EDETACHED) {
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return;
+        attached = 1;
+    } else if (res != JNI_OK) {
+        return;
+    }
+    if (env) {
+        jclass cls = (*env)->GetObjectClass(env, gapp->activity->clazz);
+        if (cls) {
+            jmethodID mid = (*env)->GetMethodID(env, cls, "setRequestedOrientation", "(I)V");
+            if (mid) {
+                jint mode = landscape ? 6 : -1;
+                (*env)->CallVoidMethod(env, gapp->activity->clazz, mid, mode);
+            }
+            (*env)->DeleteLocalRef(env, cls);
+        }
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+    }
+    if (attached) {
+        (*vm)->DetachCurrentThread(vm);
+    }
+}
+
 // Staging buffer sized for the full crash diagnostic (crash overlay draws up
 // to 511 chars; append cap keeps one byte for the terminator).
 static char g_text_buf[640];
@@ -229,14 +288,15 @@ void HandleButton( int x, int y, int button, int bDown )
 {
     if (bDown) {
         sound_click();
-        goose_handle_touch(x, y, 1);
+        goose_handle_pointer(x, y, button, 1);
+    } else {
+        goose_handle_pointer(x, y, button, 0);
     }
 }
 
 void HandleMotion( int x, int y, int mask )
 {
-    // unused - rawdrawandroid calls this but we only use HandleButton
-    (void)x; (void)y; (void)mask;
+    goose_handle_pointer(x, y, mask, 2);
 }
 
 int main(int argc, char** argv)

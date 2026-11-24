@@ -4,7 +4,7 @@ CFLAGS:=-I. -ffunction-sections -Os -fvisibility=hidden -Isrc
 GOOSE_CFLAGS:=-I. -ffunction-sections -Os -Isrc
 LDFLAGS:=-Wl,--build-id
 PACKAGENAME?=com.goosecalc.app
-SRC:=main.c crash.c
+SRC:=main.c crash.c fbw_gl.c
 
 ANDROIDVERSION?=29
 ANDROIDTARGET?=29
