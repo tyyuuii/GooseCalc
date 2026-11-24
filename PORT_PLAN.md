@@ -18,14 +18,14 @@ Port the complete **Fractal Block World (`fbw_core.goose`)** 6-DOF recursive vox
 | **Resolution** | Capped 240×140 half-block (`▀`) | Full native display resolution (`1920×1080` / `2400×1080`+) |
 | **Rendering Pipeline** | Per-pixel CPU 3D DDA raycast every frame | Hardware **OpenGL ES** culled VBO chunk meshing + universal GLSL ES 1.00 shaders (`-lGLESv3`) |
 | **Frame Pacing** | Terminal stdout flush bound (~12–25 FPS) | Clamped `CLOCK_MONOTONIC` `dt_ms` (`1..50ms`) targeting **60 FPS** |
-| **World Scales** | Layer 0 + 3 parent layers raycast per ray | Layer 0 (`1×`) + Layer 1 (`16×`) + Layer 2 (`256×`) + Layer 3 (`4096×`) hardware Z-buffered geometry |
-| **Fractal Portals** | 2D edge ring tint + expensive sub-voxel DDA | Animated concentric fractal portal shader + recessed glowing core geometry |
-| **Lighting & Depth** | Flat axis shade + CPU integer fog | 3-axis directional key/fill lighting + per-face AO + deep-depth (`500..2000`) darkening + atmospheric fog + procedural starfield sky dome |
+| **World Scales** | Layer 0 + 3 parent layers raycast per ray | 3 depth-normalized hardware bands: Layer 0 (`1×`) + Inward `1/16×` LOD + up to 5 outward parent layers (`16×` .. `1,048,576×`) |
+| **Fractal Portals** | 2D edge ring tint + expensive sub-voxel DDA | Real-time Inward `1/16×` nested voxel meshing (top 16 exposed/portal blocks) + procedural recursive Menger shader |
+| **Lighting & Depth** | Flat axis shade + CPU integer fog | 4-corner smooth Voxel Ambient Occlusion, 10 procedural surface material shaders, deep-depth tinting, and atmospheric fog/starfield dome |
 | **Entities & FX** | Disc/pixel splats in `fb_rgb` | 3D rotating portal rings, multi-part voxel monsters with cryo-freeze glow, 3D projectiles, hitscan laser/railgun beams, explosion particles, screen flash |
 
-### Dirty-Flagged Chunk Sync (Zero Per-Frame World Overhead)
-- `fbw_core.goose` maintains the authoritative `16×16×16` active chunk (`blocks[4096]`) and up to 3 parent scale chunks (`parent_blocks[12288]`).
-- `fbw_mobile.goose` hashes/tracks chunk transitions (`depth`, `px/py/pz` parent coordinates, `delta_head`, and active block count). Only when a chunk changes (shrink/grow/chunk-border/block-break) does Goose push 1024 `u32` packed words (4 `u8` block IDs per `i32`) per dirty layer to `fbw_gl.c`.
+### Dirty-Flagged Chunk Sync & Inward LOD (Zero Per-Frame World Overhead)
+- `fbw_core.goose` maintains the authoritative `16×16×16` active chunk (`blocks[4096]`), up to 5 outward parent scale chunks (`parent_blocks[20480]`), and a 256-slot deterministic inward subchunk cache (`inward_blocks`).
+- `fbw_mobile.goose` tracks `depth` + `chunk_rev` and syncs the top 16 nearby/forward exposed subdivisible blocks into `fbw_gl.c` inward slots using zero-float packed `u32` FFI quads.
 - During normal 60 FPS flight and combat, **zero chunk bytes cross FFI**—only the 6-DOF camera (in fixed-point milli-units), active entities, shots, particles, and hitscan beam cross per frame.
 
 ### Clean GLES ↔ `CNFGOGL` State Handshake

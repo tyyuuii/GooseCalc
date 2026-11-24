@@ -13,9 +13,15 @@ void fbw_gl_set_camera(int px_mm, int py_mm, int pz_mm,
                        int yaw_mrad, int pitch_mrad, int roll_mrad, int anim_ms);
 
 // Chunk & multi-scale parent synchronization (4 u8 blocks packed per u32)
+// Supports layer 0 (active 1x) + layers 1..5 (16x..1048576x outward scales)
 void fbw_gl_set_parent_meta(int layer, int valid, int bx, int by, int bz, int biome);
 void fbw_gl_push_chunk_quad(int layer, int qidx, int packed4);
 void fbw_gl_mark_chunks_dirty(void);
+
+// Inward LOD sub-chunk synchronization (1/16x nested blocks inside Layer 0)
+void fbw_gl_set_inward_meta(int slot, int valid, int bx, int by, int bz, int biome);
+void fbw_gl_push_inward_quad(int slot, int qidx, int packed4);
+void fbw_gl_mark_inward_dirty(void);
 
 // Dynamic per-frame geometry
 void fbw_gl_clear_dynamic(void);

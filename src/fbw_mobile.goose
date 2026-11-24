@@ -1,10 +1,11 @@
-// fbw_mobile.goose — Mobile touch controls, HUD, modals, and GLES3 world sync for Fractal Block World.
+// fbw_mobile.goose — Mobile touch controls, HUD, modals, and GLES world sync for Fractal Block World.
 
 import calc_bridge;
 import fbw_bridge;
 import fbw_core;
 
 const MAX_POINTERS: i32 = 10;
+const MAX_INWARD_GL: i32 = 16;
 
 // Touch event kinds matching main.c
 const PTR_UP: i32 = 0;
@@ -66,11 +67,21 @@ struct MobileController {
     want_exit_to_calc: i32,
     ptrs: TouchPointer[10],
     lay: MobileLayout,
-    // Cached chunk signature for dirty detection
+    // Chunk + Inward LOD cache for dirty detection
     sync_depth: i32,
-    sync_delta_head: i32,
-    sync_parent_sig: i32,
+    sync_rev: i32,
     sync_force: i32,
+    inw_force: i32,
+    inw_qpx: i32,
+    inw_qpy: i32,
+    inw_qpz: i32,
+    inw_qyaw: i32,
+    inw_qrev: i32,
+    inw_valid: i32[16],
+    inw_bx: i32[16],
+    inw_by: i32[16],
+    inw_bz: i32[16],
+    inw_seed: u64[16],
     // Held continuous flags
     hold_up: i32,
     hold_dn: i32,
@@ -127,7 +138,7 @@ fn compute_mobile_layout(w: i32, h: i32) -> MobileLayout {
     l.rr_x1 = l.rl_x2 + gap;
     l.rr_y1 = l.rl_y1;
     l.rr_x2 = l.rr_x1 + bw;
-    l.rr_y2 = l.rr_y1 + bh;
+    l.rr_y2 = l.rl_y1 + bh;
 
     l.up_x1 = l.rr_x2 + gap;
     l.up_y1 = l.rl_y1;
@@ -199,6 +210,7 @@ fn fbw_mobile_enter() {
     st.screen = SCREEN_PLAY;
     g_mob.last_ms = fbw_now_ms();
     g_mob.sync_force = 1;
+    g_mob.inw_force = 1;
     g_mob.hold_up = 0;
     g_mob.hold_dn = 0;
     g_mob.hold_fire = 0;
@@ -212,6 +224,11 @@ fn fbw_mobile_enter() {
         g_mob.ptrs[i].role = ACT_NONE;
         i = i + 1;
     }
+    i = 0;
+    while i < MAX_INWARD_GL {
+        g_mob.inw_valid[i] = 0;
+        i = i + 1;
+    }
 }
 
 fn fbw_should_exit_to_calc() -> i32 {
@@ -223,29 +240,21 @@ fn fbw_clear_exit_flag() {
 }
 
 // ---------------------------------------------------------------------------
-// Sync fbw_core state -> fbw_gl.c (integer-only FFI)
+// Sync fbw_core state -> fbw_gl.c (5 parent layers + Inward 1/16x LOD)
 // ---------------------------------------------------------------------------
 
 fn sync_chunks_to_gl() {
     let st = core();
-    var p0_sig: i32 = st.depth * 31 + st.delta_head * 7;
-    var p: i32 = 0;
-    while p < 3 {
-        p0_sig = p0_sig * 17 + st.parent_valid[p] + st.parent_bx[p] * 3 + st.parent_by[p] * 5 + st.parent_bz[p] * 11 + st.parent_biome[p] * 13;
-        p = p + 1;
-    }
-
     if g_mob.sync_force == 0 &&
        g_mob.sync_depth == st.depth &&
-       g_mob.sync_delta_head == st.delta_head &&
-       g_mob.sync_parent_sig == p0_sig {
+       g_mob.sync_rev == st.chunk_rev {
         return;
     }
 
     g_mob.sync_force = 0;
     g_mob.sync_depth = st.depth;
-    g_mob.sync_delta_head = st.delta_head;
-    g_mob.sync_parent_sig = p0_sig;
+    g_mob.sync_rev = st.chunk_rev;
+    g_mob.inw_force = 1;
 
     var q: i32 = 0;
     while q < 1024 {
@@ -259,8 +268,8 @@ fn sync_chunks_to_gl() {
         q = q + 1;
     }
 
-    p = 0;
-    while p < 3 {
+    var p: i32 = 0;
+    while p < 5 {
         fbw_gl_set_parent_meta(p, st.parent_valid[p], st.parent_bx[p], st.parent_by[p], st.parent_bz[p], st.parent_biome[p]);
         if st.parent_valid[p] != 0 {
             let p_off = p * CHUNK_VOL;
@@ -280,6 +289,161 @@ fn sync_chunks_to_gl() {
     }
 
     fbw_gl_mark_chunks_dirty();
+}
+
+fn is_block_exposed_air(x: i32, y: i32, z: i32) -> i32 {
+    if x == 0 || x == 15 || y == 0 || y == 15 || z == 0 || z == 15 { return 1; }
+    if get_block(x + 1, y, z) == BLK_AIR { return 1; }
+    if get_block(x - 1, y, z) == BLK_AIR { return 1; }
+    if get_block(x, y + 1, z) == BLK_AIR { return 1; }
+    if get_block(x, y - 1, z) == BLK_AIR { return 1; }
+    if get_block(x, y, z + 1) == BLK_AIR { return 1; }
+    if get_block(x, y, z - 1) == BLK_AIR { return 1; }
+    return 0;
+}
+
+fn sync_inward_to_gl() {
+    let st = core();
+    let qpx = ffloor(st.px * 2.0);
+    let qpy = ffloor(st.py * 2.0);
+    let qpz = ffloor(st.pz * 2.0);
+    let qyaw = ffloor(st.yaw * 3.0);
+
+    if g_mob.inw_force == 0 &&
+       g_mob.inw_qrev == st.chunk_rev &&
+       g_mob.inw_qpx == qpx && g_mob.inw_qpy == qpy && g_mob.inw_qpz == qpz &&
+       g_mob.inw_qyaw == qyaw {
+        return;
+    }
+
+    g_mob.inw_force = 0;
+    g_mob.inw_qrev = st.chunk_rev;
+    g_mob.inw_qpx = qpx;
+    g_mob.inw_qpy = qpy;
+    g_mob.inw_qpz = qpz;
+    g_mob.inw_qyaw = qyaw;
+
+    var cand_x: i32[16] = [0; 16];
+    var cand_y: i32[16] = [0; 16];
+    var cand_z: i32[16] = [0; 16];
+    var cand_sc: f64[16] = [999999.0; 16];
+    var cand_cnt: i32 = 0;
+
+    var fx: f64 = 0.0;
+    var fy: f64 = 0.0;
+    var fz: f64 = 0.0;
+    camera_forward(fx, fy, fz);
+
+    let pbx = clamp_i(ffloor(st.px), 0, 15);
+    let pby = clamp_i(ffloor(st.py), 0, 15);
+    let pbz = clamp_i(ffloor(st.pz), 0, 15);
+    let y0 = clamp_i(pby - 7, 0, 15);
+    let y1 = clamp_i(pby + 7, 0, 15);
+    let z0 = clamp_i(pbz - 8, 0, 15);
+    let z1 = clamp_i(pbz + 8, 0, 15);
+    let x0 = clamp_i(pbx - 8, 0, 15);
+    let x1 = clamp_i(pbx + 8, 0, 15);
+
+    var y = y0;
+    while y <= y1 {
+        var z = z0;
+        while z <= z1 {
+            var x = x0;
+            while x <= x1 {
+                let blk = get_block(x, y, z);
+                if blk != BLK_AIR && is_block_subdivisible(blk) != 0 {
+                    let is_portal = is_block_shrinkable(blk);
+                    let dx = (x as f64) + 0.5 - st.px;
+                    let dy = (y as f64) + 0.5 - st.py;
+                    let dz = (z as f64) + 0.5 - st.pz;
+                    let d2 = dx * dx + dy * dy + dz * dz;
+                    let max_d2: f64 = if is_portal != 0 { 110.0 } else { 42.0 };
+                    if d2 <= max_d2 && is_block_exposed_air(x, y, z) != 0 {
+                        let dot = dx * fx + dy * fy + dz * fz;
+                        if dot >= -1.4 || d2 < 6.5 {
+                            var sc = d2 - dot * 3.0;
+                            if is_portal != 0 { sc = sc - 80.0; }
+                            if cand_cnt < MAX_INWARD_GL {
+                                cand_x[cand_cnt] = x;
+                                cand_y[cand_cnt] = y;
+                                cand_z[cand_cnt] = z;
+                                cand_sc[cand_cnt] = sc;
+                                cand_cnt = cand_cnt + 1;
+                            } else {
+                                var wi: i32 = 0;
+                                var max_i: i32 = 0;
+                                while wi < MAX_INWARD_GL {
+                                    if cand_sc[wi] > cand_sc[max_i] { max_i = wi; }
+                                    wi = wi + 1;
+                                }
+                                if sc < cand_sc[max_i] {
+                                    cand_x[max_i] = x;
+                                    cand_y[max_i] = y;
+                                    cand_z[max_i] = z;
+                                    cand_sc[max_i] = sc;
+                                }
+                            }
+                        }
+                    }
+                }
+                x = x + 1;
+            }
+            z = z + 1;
+        }
+        y = y + 1;
+    }
+
+    let pseed = cur_seed();
+    let pdepth = st.depth;
+    let pbio = cur_biome();
+    var any_dirty: i32 = 0;
+
+    var s: i32 = 0;
+    while s < MAX_INWARD_GL {
+        if s < cand_cnt {
+            let cx = cand_x[s];
+            let cy = cand_y[s];
+            let cz = cand_z[s];
+            let blk = get_block(cx, cy, cz);
+            let cseed = resolve_child_frame_seed(pseed, pdepth, cx, cy, cz, blk);
+            if g_mob.inw_valid[s] == 0 ||
+               g_mob.inw_bx[s] != cx || g_mob.inw_by[s] != cy || g_mob.inw_bz[s] != cz ||
+               g_mob.inw_seed[s] != cseed {
+                let cbio = resolve_child_frame_biome(pseed, pdepth, pbio, cx, cy, cz, blk, -1);
+                let cslot = resolve_subchunk_slot(pseed, pdepth, pbio, cx, cy, cz, blk);
+                let c_off = cslot * CHUNK_VOL;
+                var q: i32 = 0;
+                while q < 1024 {
+                    let base = c_off + q * 4;
+                    let b0 = st.inward_blocks[base + 0] as! i32;
+                    let b1 = st.inward_blocks[base + 1] as! i32;
+                    let b2 = st.inward_blocks[base + 2] as! i32;
+                    let b3 = st.inward_blocks[base + 3] as! i32;
+                    let packed = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                    fbw_gl_push_inward_quad(s, q, packed);
+                    q = q + 1;
+                }
+                fbw_gl_set_inward_meta(s, 1, cx, cy, cz, cbio);
+                g_mob.inw_valid[s] = 1;
+                g_mob.inw_bx[s] = cx;
+                g_mob.inw_by[s] = cy;
+                g_mob.inw_bz[s] = cz;
+                g_mob.inw_seed[s] = cseed;
+                any_dirty = 1;
+            }
+        } else {
+            if g_mob.inw_valid[s] != 0 {
+                fbw_gl_set_inward_meta(s, 0, 0, 0, 0, 0);
+                g_mob.inw_valid[s] = 0;
+                any_dirty = 1;
+            }
+        }
+        s = s + 1;
+    }
+
+    if any_dirty != 0 {
+        fbw_gl_mark_inward_dirty();
+    }
 }
 
 fn sync_dynamic_to_gl() {
@@ -353,26 +517,51 @@ fn step_mobile_controls(dt_ms: i32) {
     let dt_s = (dt_ms as f64) * 0.001;
     let thrust: f64 = 18.0 * dt_s;
 
-    // Virtual flight stick -> camera-aligned forward + horizontal strafe
+    let cy = fcos(st.yaw);
+    let sy = fsin(st.yaw);
+    let cp = fcos(st.pitch);
+    let sp = fsin(st.pitch);
+    let cr = if st.true_up != 0 { 1.0 } else { fcos(st.roll) };
+    let sr = if st.true_up != 0 { 0.0 } else { fsin(st.roll) };
+
+    let fx = cp * cy;
+    let fy = sp;
+    let fz = cp * sy;
+
+    let rx0 = -sy;
+    let rz0 = cy;
+    let ux0 = -sp * cy;
+    let uy0 = cp;
+    let uz0 = -sp * sy;
+
+    let rx = rx0 * cr + ux0 * sr;
+    let ry = uy0 * sr;
+    let rz = rz0 * cr + uz0 * sr;
+
+    let ux = ux0 * cr - rx0 * sr;
+    let uy = uy0 * cr;
+    let uz = uz0 * cr - rz0 * sr;
+
+    // Virtual flight stick -> camera-aligned forward + roll-aligned strafe
     if fabs(g_mob.stick_dx) > 0.08 || fabs(g_mob.stick_dy) > 0.08 {
-        var fx: f64 = 0.0;
-        var fy: f64 = 0.0;
-        var fz: f64 = 0.0;
-        camera_forward(fx, fy, fz);
-        let sy = fsin(st.yaw);
-        let cy = fcos(st.yaw);
-        let rx = -sy;
-        let rz = cy;
         let fwd = -g_mob.stick_dy * thrust;
         let strafe = g_mob.stick_dx * thrust;
-        apply_thrust(fx * fwd + rx * strafe, fy * fwd, fz * fwd + rz * strafe);
+        apply_thrust(fx * fwd + rx * strafe, fy * fwd + ry * strafe, fz * fwd + rz * strafe);
     }
 
     if g_mob.hold_up != 0 {
-        apply_thrust(0.0, thrust * 0.9, 0.0);
+        if st.true_up != 0 {
+            apply_thrust(0.0, thrust * 0.9, 0.0);
+        } else {
+            apply_thrust(ux * thrust * 0.9, uy * thrust * 0.9, uz * thrust * 0.9);
+        }
     }
     if g_mob.hold_dn != 0 {
-        apply_thrust(0.0, -thrust * 0.9, 0.0);
+        if st.true_up != 0 {
+            apply_thrust(0.0, -thrust * 0.9, 0.0);
+        } else {
+            apply_thrust(-ux * thrust * 0.9, -uy * thrust * 0.9, -uz * thrust * 0.9);
+        }
     }
     if g_mob.hold_roll_l != 0 {
         st.roll = wrap_angle(st.roll - 1.8 * dt_s);
@@ -401,7 +590,7 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
     if dt_ms > 50 { dt_ms = 50; }
 
     let prev_depth = st.depth;
-    let prev_delta = st.delta_head;
+    let prev_rev = st.chunk_rev;
 
     if st.screen == SCREEN_PLAY {
         step_mobile_controls(dt_ms);
@@ -410,12 +599,13 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
         st.anim_ms = st.anim_ms + dt_ms;
     }
 
-    if st.depth != prev_depth || st.delta_head != prev_delta {
+    if st.depth != prev_depth || st.chunk_rev != prev_rev {
         g_mob.sync_force = 1;
     }
 
-    // 1. Hardware OpenGL ES 3.0 Pass
+    // 1. Hardware OpenGL Pass (Sky + 5 Macro Parents + Layer 0 + Inward 1/16x LOD + Dynamic)
     sync_chunks_to_gl();
+    sync_inward_to_gl();
     sync_dynamic_to_gl();
     fbw_gl_set_viewport(w, h, st.depth, cur_biome(), st.flash_rgb as! i32, st.flash_ms);
     fbw_gl_set_camera(
@@ -477,7 +667,7 @@ fn buf_int(buf: u8[160]&, len: i32&, val_in: i32) {
     }
 }
 
-fn wep_tag(w: i32) -> const u8[:] {
+fn wep_tag(w: i32, quasar: i32) -> const u8[:] {
     if w == 0 { return "1:PLS"; }
     if w == 1 { return "2:CAN"; }
     if w == 2 { return "3:LSR"; }
@@ -487,6 +677,7 @@ fn wep_tag(w: i32) -> const u8[:] {
     if w == 6 { return "7:RAL"; }
     if w == 7 { return "8:EMP"; }
     if w == 8 { return "9:NUK"; }
+    if quasar != 0 { return "0:QSR"; }
     return "0:DRK";
 }
 
@@ -521,7 +712,7 @@ fn draw_mobile_hud(w: i32, h: i32) {
     set_color(0x38BDF8FF);
     fbw_text(14, 38, b2[0..n2], 2);
 
-    // Top-right quick utility buttons: [MAP] [RKT] [TRU] [MRK] [F1] [II]
+    // Top-right quick utility buttons: [MAP] [RKT] [TRU] [MRK] [INFO] [MENU]
     let btn_w = clamp_i(w / 14, 64, 96);
     let btn_h = l.top_h - 14;
     let gap: i32 = 6;
@@ -559,7 +750,7 @@ fn draw_mobile_hud(w: i32, h: i32) {
     // Center crosshair
     let cx = w / 2;
     let cy = h / 2;
-    set_color(if st.near_prompt_len > 0 { 0xFACC15FF } else { 0xFFFFFFFF });
+    set_color(if st.near_prompt_len > 0 || st.near_ring_kind != ENT_NONE { 0xFACC15FF } else { 0xFFFFFFFF });
     draw_segment(cx - 12, cy, cx - 4, cy);
     draw_segment(cx + 4, cy, cx + 12, cy);
     draw_segment(cx, cy - 12, cx, cy - 4);
@@ -578,6 +769,16 @@ fn draw_mobile_hud(w: i32, h: i32) {
         fbw_box(mx - 12, l.top_h + 8, mx + tw + 12, l.top_h + 36, 0x0F172AE0, 0x4ADE80AA);
         set_color(0x4ADE80FF);
         fbw_text(mx, l.top_h + 14, st.near_prompt[0..st.near_prompt_len], 2);
+    } else if st.near_ring_kind != ENT_NONE {
+        let rmsg = if st.near_ring_kind == ENT_RING_RED { "Tap USE on Red Ring to Grow 16x!" }
+                   else if st.near_ring_kind == ENT_RING_PINK { "Tap USE on Pink Ring to Dive 256x!" }
+                   else if st.near_ring_kind == ENT_RING_BLUE { "Tap USE on Blue Ring to Teleport!" }
+                   else { "Tap USE on Green Ring to Shrink 16x!" };
+        let tw = fbw_text_w(rmsg, 2);
+        let mx = (w - tw) / 2;
+        fbw_box(mx - 12, l.top_h + 8, mx + tw + 12, l.top_h + 36, 0x0F172AE0, 0x38BDF8AA);
+        set_color(0x38BDF8FF);
+        fbw_text(mx, l.top_h + 14, rmsg, 2);
     }
 
     // Compact corner minimap
@@ -619,7 +820,7 @@ fn draw_mobile_hud(w: i32, h: i32) {
         let bd: u32 = if active { 0xFACC15FF } else if unlocked { 0x475569FF } else { 0x1E293BFF };
         fbw_box(sx1, l.wep_y1, sx2, l.wep_y2, bg, bd);
         set_color(if unlocked { 0xF8FAFCFF } else { 0x64748BFF });
-        fbw_text(sx1 + 6, l.wep_y1 + 8, wep_tag(wi), 2);
+        fbw_text(sx1 + 6, l.wep_y1 + 8, wep_tag(wi, st.quasar_drive), 2);
         if unlocked {
             var ab: u8[160] = [0; 160];
             var al: i32 = 0;
@@ -687,8 +888,8 @@ fn draw_modal_row(mx: i32, y: i32, mw: i32, label: const u8[:], fill: u32, text_
 
 fn draw_mobile_modal(w: i32, h: i32) {
     let st = core();
-    let mw = clamp_i((w * 72) / 100, 420, 760);
-    let mh = clamp_i((h * 76) / 100, 320, 560);
+    let mw = clamp_i((w * 74) / 100, 440, 780);
+    let mh = clamp_i((h * 80) / 100, 340, 580);
     let mx = (w - mw) / 2;
     let my = (h - mh) / 2;
 
@@ -697,36 +898,38 @@ fn draw_mobile_modal(w: i32, h: i32) {
     if st.screen == SCREEN_BUY {
         set_color(0x4ADE80FF);
         fbw_text(mx + 22, my + 16, "BUY STATION - TAP ITEM TO PURCHASE", 3);
-        draw_modal_row(mx, my + 60,  mw, "[1] +40 Health (15g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 114, mw, "[2] +40 Armor (20g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 168, mw, "[3] Refill All Ammo (25g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 222, mw, "[4] +1 Damage Level (60g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 276, mw, "[5] +1 Speed / Fire Rate (55g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 330, mw, "[6] Unlock Next Weapon (90g)", 0x1E293BFF, 0xFACC15FF);
-        draw_modal_row(mx, my + mh - 64, mw, "CLOSE STATION", 0x334155FF, 0x38BDF8FF);
+        draw_modal_row(mx, my + 56,  mw, "[1] +50 Health (15g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 108, mw, "[2] +50 Armor (20g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 160, mw, "[3] Cannon + Laser + Minigun (25g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 212, mw, "[4] Rocket + Homing + Rail + EMP (40g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 264, mw, "[5] Nuke + Dark Hole (60g)", 0x1E293BFF, 0xFACC15FF);
+        draw_modal_row(mx, my + 316, mw, "[6] +1 Vault Key (50g)", 0x1E293BFF, 0xFACC15FF);
+        draw_modal_row(mx, my + mh - 60, mw, "CLOSE STATION", 0x334155FF, 0x38BDF8FF);
     } else if st.screen == SCREEN_SELL {
         set_color(0xFACC15FF);
         fbw_text(mx + 22, my + 16, "SELL STATION - CONVERT SURPLUS TO GOLD", 3);
-        draw_modal_row(mx, my + 70,  mw, "[1] Sell 40 Armor -> +25 Gold", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 130, mw, "[2] Sell 1 Key -> +60 Gold", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 190, mw, "[3] Sell Surplus Ammo -> +35 Gold", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + mh - 64, mw, "CLOSE STATION", 0x334155FF, 0x38BDF8FF);
+        draw_modal_row(mx, my + 64,  mw, "[1] Sell 25 Health -> +20 Gold", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 120, mw, "[2] Sell 25 Armor -> +18 Gold", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 176, mw, "[3] Sell 50 Minigun Ammo -> +15 Gold", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 232, mw, "[4] Sell 1 Vault Key -> +40 Gold", 0x1E293BFF, 0xFACC15FF);
+        draw_modal_row(mx, my + mh - 60, mw, "CLOSE STATION", 0x334155FF, 0x38BDF8FF);
     } else if st.screen == SCREEN_BLACK_MARKET {
         set_color(0xE879F9FF);
-        fbw_text(mx + 22, my + 16, "BLACK MARKET - RARE ARTIFACTS", 3);
-        draw_modal_row(mx, my + 70,  mw, "[1] Key (80g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 130, mw, "[2] EMP + Nuke Unlock (140g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 190, mw, "[3] Dark Hole Gun (220g)", 0x1E293BFF, 0xFACC15FF);
-        draw_modal_row(mx, my + mh - 64, mw, "CLOSE BLACK MARKET", 0x334155FF, 0x38BDF8FF);
+        fbw_text(mx + 22, my + 16, "BLACK MARKET - RARE MUNITIONS", 3);
+        draw_modal_row(mx, my + 64,  mw, "[1] +12 Railgun Slugs (20g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 120, mw, "[2] +8 EMP Charges (18g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 176, mw, "[3] +3 Nukes (30g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 232, mw, "[4] +3 Dark Holes (35g)", 0x1E293BFF, 0xFACC15FF);
+        draw_modal_row(mx, my + mh - 60, mw, "CLOSE BLACK MARKET", 0x334155FF, 0x38BDF8FF);
     } else if st.screen == SCREEN_TOME {
         set_color(0x38BDF8FF);
         fbw_text(mx + 22, my + 16, "XAR LORE TOME", 3);
         set_color(0xF8FAFCFF);
         fbw_text(mx + 22, my + 72, "Every block contains a 16x16x16 universe.", 2);
-        fbw_text(mx + 22, my + 104, "Tap SHRK on portals or fly through green rings.", 2);
+        fbw_text(mx + 22, my + 104, "Tap SHRK or fly into portals / green rings.", 2);
         fbw_text(mx + 22, my + 136, "Use GROW or red rings to climb outward scales.", 2);
-        fbw_text(mx + 22, my + 168, "Descend to the Inner Core to rescue Friend K!", 2);
-        draw_modal_row(mx, my + mh - 64, mw, "RESUME EXPLORATION", 0x1E3A8AFF, 0xFFFFFFFF);
+        fbw_text(mx + 22, my + 168, "Descend into Core Gates to rescue Friend K!", 2);
+        draw_modal_row(mx, my + mh - 60, mw, "RESUME EXPLORATION", 0x1E3A8AFF, 0xFFFFFFFF);
     } else if st.screen == SCREEN_VICTORY {
         set_color(0xFACC15FF);
         fbw_text(mx + 22, my + 18, "VICTORY! FRIEND 'K' RESCUED!", 3);
@@ -742,27 +945,28 @@ fn draw_mobile_modal(w: i32, h: i32) {
         while i < 5 {
             var mb: u8[160] = [0; 160];
             var ml: i32 = 0;
-            buf_str(mb, ml, "Marker "); buf_int(mb, ml, i); buf_str(mb, ml, ": ");
+            buf_str(mb, ml, if i == 0 { "Short: " } else { "Long " });
+            if i > 0 { buf_int(mb, ml, i); buf_str(mb, ml, ": "); }
             if st.markers[i].used != 0 {
                 buf_str(mb, ml, "LVL "); buf_int(mb, ml, st.markers[i].depth);
                 buf_str(mb, ml, " "); buf_str(mb, ml, biome_name(st.markers[i].biome));
             } else {
-                buf_str(mb, ml, "(Empty - tap MRK in HUD to drop)");
+                buf_str(mb, ml, if i == 0 { "(Empty - tap MRK in HUD)" } else { "(Empty Long Marker)" });
             }
             mb[ml] = 0;
-            draw_modal_row(mx, my + 54 + i * 52, mw, mb[0..ml], 0x1E293BFF, if st.markers[i].used != 0 { 0x4ADE80FF } else { 0x94A3B8FF });
+            draw_modal_row(mx, my + 52 + i * 50, mw, mb[0..ml], 0x1E293BFF, if st.markers[i].used != 0 { 0x4ADE80FF } else { 0x94A3B8FF });
             i = i + 1;
         }
-        draw_modal_row(mx, my + mh - 64, mw, "CLOSE GUIDE", 0x334155FF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + mh - 114, mw, "+ DROP LONG TRACKING MARKER", 0x14532DFF, 0x4ADE80FF);
+        draw_modal_row(mx, my + mh - 60, mw, "CLOSE GUIDE", 0x334155FF, 0xFFFFFFFF);
     } else {
-        // SCREEN_PAUSE or fallback
         set_color(0x38BDF8FF);
         fbw_text(mx + 22, my + 18, "FRACTAL BLOCK WORLD - PAUSED", 3);
-        draw_modal_row(mx, my + 70,  mw, "RESUME GAME", 0x065F46FF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 130, mw, if st.genesis_mode != 0 { "MODE: GENESIS (TAP FOR CLASSIC)" } else { "MODE: CLASSIC (TAP FOR GENESIS)" }, 0x1E3A8AFF, 0xFACC15FF);
-        draw_modal_row(mx, my + 190, mw, if st.shrink_any != 0 { "SHRINK ANY: ON (TAP TO TOGGLE)" } else { "SHRINK ANY: OFF (TAP TO TOGGLE)" }, 0x312E81FF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 250, mw, "RESTART NEW RUN", 0x7C2D12FF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 310, mw, "EXIT TO GOOSECALC", 0x7F1D1DFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 64,  mw, "RESUME GAME", 0x065F46FF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 120, mw, if st.genesis_mode != 0 { "MODE: GENESIS (TAP FOR CLASSIC)" } else { "MODE: CLASSIC (TAP FOR GENESIS)" }, 0x1E3A8AFF, 0xFACC15FF);
+        draw_modal_row(mx, my + 176, mw, if st.shrink_any != 0 { "SHRINK ANY: ON (TAP TO TOGGLE)" } else { "SHRINK ANY: OFF (TAP TO TOGGLE)" }, 0x312E81FF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 232, mw, "RESTART NEW RUN", 0x7C2D12FF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 288, mw, "EXIT TO GOOSECALC", 0x7F1D1DFF, 0xFFFFFFFF);
     }
 }
 
@@ -770,8 +974,8 @@ fn handle_modal_tap(x: i32, y: i32) {
     let st = core();
     let w = g_mob.lay.w;
     let h = g_mob.lay.h;
-    let mw = clamp_i((w * 72) / 100, 420, 760);
-    let mh = clamp_i((h * 76) / 100, 320, 560);
+    let mw = clamp_i((w * 74) / 100, 440, 780);
+    let mh = clamp_i((h * 80) / 100, 340, 580);
     let mx = (w - mw) / 2;
     let my = (h - mh) / 2;
 
@@ -780,7 +984,7 @@ fn handle_modal_tap(x: i32, y: i32) {
         return;
     }
 
-    if in_box(x, y, mx + 18, my + mh - 64, mx + mw - 18, my + mh - 18) &&
+    if in_box(x, y, mx + 18, my + mh - 60, mx + mw - 18, my + mh - 14) &&
        st.screen != SCREEN_PAUSE && st.screen != SCREEN_VICTORY {
         st.screen = SCREEN_PLAY;
         return;
@@ -789,7 +993,7 @@ fn handle_modal_tap(x: i32, y: i32) {
     if st.screen == SCREEN_BUY {
         var r: i32 = 0;
         while r < 6 {
-            let ry = my + 60 + r * 54;
+            let ry = my + 56 + r * 52;
             if y >= ry && y <= ry + 46 {
                 handle_buy_action(r + 1);
                 fbw_sound_fx(5);
@@ -799,8 +1003,8 @@ fn handle_modal_tap(x: i32, y: i32) {
         }
     } else if st.screen == SCREEN_SELL {
         var r: i32 = 0;
-        while r < 3 {
-            let ry = my + 70 + r * 60;
+        while r < 4 {
+            let ry = my + 64 + r * 56;
             if y >= ry && y <= ry + 46 {
                 handle_sell_action(r + 1);
                 fbw_sound_fx(5);
@@ -810,8 +1014,8 @@ fn handle_modal_tap(x: i32, y: i32) {
         }
     } else if st.screen == SCREEN_BLACK_MARKET {
         var r: i32 = 0;
-        while r < 3 {
-            let ry = my + 70 + r * 60;
+        while r < 4 {
+            let ry = my + 64 + r * 56;
             if y >= ry && y <= ry + 46 {
                 handle_black_market_action(r + 1);
                 fbw_sound_fx(5);
@@ -820,9 +1024,14 @@ fn handle_modal_tap(x: i32, y: i32) {
             r = r + 1;
         }
     } else if st.screen == SCREEN_INFO_F1 || st.screen == SCREEN_INFO_F4 {
+        if y >= my + mh - 114 && y <= my + mh - 68 {
+            drop_marker(1);
+            fbw_sound_fx(5);
+            return;
+        }
         var i: i32 = 0;
         while i < 5 {
-            let ry = my + 54 + i * 52;
+            let ry = my + 52 + i * 50;
             if y >= ry && y <= ry + 46 {
                 if warp_to_marker(i) != 0 {
                     st.screen = SCREEN_PLAY;
@@ -838,26 +1047,26 @@ fn handle_modal_tap(x: i32, y: i32) {
         if y >= my + 200 && y <= my + 246 { init_new_game(); st.screen = SCREEN_PLAY; g_mob.sync_force = 1; return; }
         if y >= my + 260 && y <= my + 306 { g_mob.want_exit_to_calc = 1; return; }
     } else if st.screen == SCREEN_PAUSE {
-        if y >= my + 70 && y <= my + 116 { st.screen = SCREEN_PLAY; return; }
-        if y >= my + 130 && y <= my + 176 {
+        if y >= my + 64 && y <= my + 110 { st.screen = SCREEN_PLAY; return; }
+        if y >= my + 120 && y <= my + 166 {
             st.genesis_mode = if st.genesis_mode != 0 { 0 } else { 1 };
             init_new_game();
             st.screen = SCREEN_PLAY;
             g_mob.sync_force = 1;
             return;
         }
-        if y >= my + 190 && y <= my + 236 {
+        if y >= my + 176 && y <= my + 222 {
             st.shrink_any = if st.shrink_any != 0 { 0 } else { 1 };
             st.screen = SCREEN_PLAY;
             return;
         }
-        if y >= my + 250 && y <= my + 296 {
+        if y >= my + 232 && y <= my + 278 {
             init_new_game();
             st.screen = SCREEN_PLAY;
             g_mob.sync_force = 1;
             return;
         }
-        if y >= my + 310 && y <= my + 356 {
+        if y >= my + 288 && y <= my + 334 {
             g_mob.want_exit_to_calc = 1;
             return;
         }
@@ -959,13 +1168,17 @@ fn fbw_mobile_pointer(x: i32, y: i32, pid_in: i32, ev_type: i32) {
             return;
         }
 
-        // Bottom 10-weapon strip tap
+        // Bottom 10-weapon strip tap (respect unlock state)
         if y >= l.wep_y1 && y <= l.wep_y2 {
             let slot_w = (l.w - 28) / NUM_WEAPONS;
             if slot_w > 0 {
                 let wi = clamp_i((x - 14) / slot_w, 0, NUM_WEAPONS - 1);
-                st.weapon = wi;
-                fbw_sound_fx(0);
+                if st.wep_unlocked[wi] != 0 {
+                    st.weapon = wi;
+                    fbw_sound_fx(0);
+                } else {
+                    set_status_msg("Weapon locked! Find Weapon Module or Buy Station.", 1400);
+                }
             }
             return;
         }

@@ -16,6 +16,10 @@ extern fn fbw_gl_set_parent_meta(layer: i32, valid: i32, bx: i32, by: i32, bz: i
 extern fn fbw_gl_push_chunk_quad(layer: i32, qidx: i32, packed4: i32);
 extern fn fbw_gl_mark_chunks_dirty();
 
+extern fn fbw_gl_set_inward_meta(slot: i32, valid: i32, bx: i32, by: i32, bz: i32, biome: i32);
+extern fn fbw_gl_push_inward_quad(slot: i32, qidx: i32, packed4: i32);
+extern fn fbw_gl_mark_inward_dirty();
+
 extern fn fbw_gl_clear_dynamic();
 extern fn fbw_gl_push_entity(kind: i32, x_mm: i32, y_mm: i32, z_mm: i32, hp: i32, max_hp: i32, freeze_ms: i32);
 extern fn fbw_gl_push_shot(x_mm: i32, y_mm: i32, z_mm: i32, rgb: i32);
