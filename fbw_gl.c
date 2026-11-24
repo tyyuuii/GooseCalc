@@ -132,6 +132,10 @@ static int g_l1_inward_by[MAX_L1_INWARD_SLOTS];
 static int g_l1_inward_bz[MAX_L1_INWARD_SLOTS];
 static int g_l1_inward_biome[MAX_L1_INWARD_SLOTS];
 static int g_l1_inward_grid[CHUNK_VOL]; // -1 or slot index for Layer 1 (16x -> 1x) meshing
+static int g_inward_tier[MAX_INWARD_SLOTS];
+static int g_l1_inward_tier[MAX_L1_INWARD_SLOTS];
+static int g_disable_lod = 0;
+static int g_lod_dist_level = 4;
 static int g_inward_dirty = 1;
 
 static int g_vp_w = 1280, g_vp_h = 720;
@@ -599,6 +603,154 @@ static void apply_depth_tint(uint8_t *r, uint8_t *g, uint8_t *b) {
     }
 }
 
+static int is_accent_or_portal_blk(uint8_t b) {
+    if (b >= BLK_BLACK_CUBE && b <= BLK_CORE_GATE) return 1;
+    if (b >= BLK_BUY_STATION && b <= BLK_UPG_WEP) return 1;
+    if (b == BLK_GOLD_ORE || b == BLK_CRATE || b == BLK_PETAL_Y || b == BLK_PETAL_W || b == BLK_WOOD) return 1;
+    return 0;
+}
+
+static int compute_slot_tier(int layer, int lx, int ly, int lz,
+                             float scale, float px_off, float py_off, float pz_off,
+                             int prev_tier) {
+    if (g_disable_lod) return 1;
+    float cx = px_off + ((float)lx + 0.5f) * scale;
+    float cy = py_off + ((float)ly + 0.5f) * scale;
+    float cz = pz_off + ((float)lz + 0.5f) * scale;
+    float dx = cx - g_cam_x;
+    float dy = cy - g_cam_y;
+    float dz = cz - g_cam_z;
+    float d = sqrtf(dx * dx + dy * dy + dz * dz);
+    float L = (float)g_lod_dist_level;
+    float r16 = (layer == 0) ? (1.6f + 0.90f * L) : (18.0f + 9.5f * L);
+    float r8  = (layer == 0) ? (3.8f + 1.95f * L) : (38.0f + 19.0f * L);
+    float h16 = (layer == 0) ? 0.55f : 4.0f;
+    float h8  = (layer == 0) ? 0.95f : 8.0f;
+
+    if (prev_tier == 1) {
+        if (d <= r16 + h16) return 1;
+        return (d <= r8 + h8) ? 2 : 4;
+    } else if (prev_tier == 2) {
+        if (d <= r16 - h16) return 1;
+        return (d <= r8 + h8) ? 2 : 4;
+    } else if (prev_tier == 4) {
+        if (d <= r16 - h16) return 1;
+        return (d <= r8 - h8) ? 2 : 4;
+    }
+    if (d <= r16) return 1;
+    return (d <= r8) ? 2 : 4;
+}
+
+static inline int pooled_occ(const uint8_t *pooled, int dim,
+                             int layer, int lx, int ly, int lz,
+                             int px, int py, int pz,
+                             int hole_x, int hole_y, int hole_z, int skip_hole) {
+    if (px >= 0 && px < dim && py >= 0 && py < dim && pz >= 0 && pz < dim) {
+        return pooled[(py * dim + pz) * dim + px] != BLK_AIR ? 1 : 0;
+    }
+    int nx = lx + (px < 0 ? -1 : (px >= dim ? 1 : 0));
+    int ny = ly + (py < 0 ? -1 : (py >= dim ? 1 : 0));
+    int nz = lz + (pz < 0 ? -1 : (pz >= dim ? 1 : 0));
+    if (nx < 0 || nx >= 16 || ny < 0 || ny >= 16 || nz < 0 || nz >= 16) return 0;
+    if (skip_hole && nx == hole_x && ny == hole_y && nz == hole_z) return 0;
+    uint8_t nb = chunk_at(layer, nx, ny, nz);
+    if (nb == BLK_AIR) return 0;
+    const int *grid = (layer == 0) ? g_inward_grid : g_l1_inward_grid;
+    if (grid[(ny << 8) | (nz << 4) | nx] >= 0) return 0;
+    return 1;
+}
+
+static void mesh_inward_slot_pooled(int layer, int slot, int lx, int ly, int lz,
+                                    float parent_scale, float px_off, float py_off, float pz_off,
+                                    int hole_x, int hole_y, int hole_z, int skip_hole,
+                                    float sub_tier_offset, int step,
+                                    FbwVert **pbuf, int *cnt, int *max_v, int allow_grow) {
+    const int dim = (step == 2) ? 8 : 4;
+    const float sc = parent_scale / (float)dim;
+    const float ox = px_off + (float)lx * parent_scale;
+    const float oy = py_off + (float)ly * parent_scale;
+    const float oz = pz_off + (float)lz * parent_scale;
+    const uint8_t *arr = (layer == 0) ? g_inward[slot] : g_l1_inward[slot];
+    const int thresh = (step == 2) ? 2 : 12;
+
+    uint8_t pooled[512];
+    int py, pz, px;
+    for (py = 0; py < dim; py++) {
+        for (pz = 0; pz < dim; pz++) {
+            for (px = 0; px < dim; px++) {
+                int solid_cnt = 0;
+                uint8_t best_blk = BLK_AIR;
+                int best_accent = 0;
+                int dy, dz, dx;
+                for (dy = 0; dy < step; dy++) {
+                    int sy = py * step + dy;
+                    for (dz = 0; dz < step; dz++) {
+                        int sz = pz * step + dz;
+                        for (dx = 0; dx < step; dx++) {
+                            int sx = px * step + dx;
+                            uint8_t b = arr[(sy << 8) | (sz << 4) | sx];
+                            if (b != BLK_AIR) {
+                                solid_cnt++;
+                                int acc = is_accent_or_portal_blk(b);
+                                if (best_blk == BLK_AIR || (acc && !best_accent)) {
+                                    best_blk = b;
+                                    best_accent = acc;
+                                }
+                            }
+                        }
+                    }
+                }
+                pooled[(py * dim + pz) * dim + px] =
+                    (solid_cnt >= thresh || (solid_cnt >= 1 && best_accent)) ? best_blk : BLK_AIR;
+            }
+        }
+    }
+
+    for (py = 0; py < dim; py++) {
+        for (pz = 0; pz < dim; pz++) {
+            for (px = 0; px < dim; px++) {
+                uint8_t blk = pooled[(py * dim + pz) * dim + px];
+                if (blk == BLK_AIR) continue;
+
+                uint8_t r, g, b;
+                float style;
+                block_color(blk, &r, &g, &b, &style);
+                apply_depth_tint(&r, &g, &b);
+                style += sub_tier_offset;
+
+                float wx0 = ox + (float)px * sc, wx1 = wx0 + sc;
+                float wy0 = oy + (float)py * sc, wy1 = wy0 + sc;
+                float wz0 = oz + (float)pz * sc, wz1 = wz0 + sc;
+
+                if (!pooled_occ(pooled, dim, layer, lx, ly, lz, px, py + 1, pz, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy1,wz1, wx1,wy1,wz1, wx1,wy1,wz0, wx0,wy1,wz0,
+                                  1.00f, style, r, g, b, 255);
+                }
+                if (!pooled_occ(pooled, dim, layer, lx, ly, lz, px, py - 1, pz, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx1,wy0,wz0, wx1,wy0,wz1, wx0,wy0,wz1,
+                                  0.60f, style, r, g, b, 255);
+                }
+                if (!pooled_occ(pooled, dim, layer, lx, ly, lz, px + 1, py, pz, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz1, wx1,wy0,wz0, wx1,wy1,wz0, wx1,wy1,wz1,
+                                  0.88f, style, r, g, b, 255);
+                }
+                if (!pooled_occ(pooled, dim, layer, lx, ly, lz, px - 1, py, pz, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx0,wy0,wz1, wx0,wy1,wz1, wx0,wy1,wz0,
+                                  0.76f, style, r, g, b, 255);
+                }
+                if (!pooled_occ(pooled, dim, layer, lx, ly, lz, px, py, pz + 1, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz1, wx1,wy0,wz1, wx1,wy1,wz1, wx0,wy1,wz1,
+                                  0.95f, style, r, g, b, 255);
+                }
+                if (!pooled_occ(pooled, dim, layer, lx, ly, lz, px, py, pz - 1, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz0, wx0,wy0,wz0, wx0,wy1,wz0, wx1,wy1,wz0,
+                                  0.70f, style, r, g, b, 255);
+                }
+            }
+        }
+    }
+}
+
 static void mesh_inward_slot(int layer, int slot, int lx, int ly, int lz,
                              float parent_scale, float px_off, float py_off, float pz_off,
                              int hole_x, int hole_y, int hole_z, int skip_hole,
@@ -690,9 +842,19 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                                             : g_l1_inward_grid[(y << 8) | (z << 4) | x];
                     if (slot >= 0) {
                         float sub_tier = (layer == 0) ? 16.0f : 0.0f;
-                        mesh_inward_slot(layer, slot, x, y, z, scale, ox, oy, oz,
-                                         hole_x, hole_y, hole_z, skip_hole,
-                                         sub_tier, pbuf, cnt, max_v, allow_grow);
+                        int prev_t = (layer == 0) ? g_inward_tier[slot] : g_l1_inward_tier[slot];
+                        int tier = compute_slot_tier(layer, x, y, z, scale, ox, oy, oz, prev_t);
+                        if (layer == 0) g_inward_tier[slot] = tier;
+                        else g_l1_inward_tier[slot] = tier;
+                        if (tier == 1) {
+                            mesh_inward_slot(layer, slot, x, y, z, scale, ox, oy, oz,
+                                             hole_x, hole_y, hole_z, skip_hole,
+                                             sub_tier, pbuf, cnt, max_v, allow_grow);
+                        } else {
+                            mesh_inward_slot_pooled(layer, slot, x, y, z, scale, ox, oy, oz,
+                                                    hole_x, hole_y, hole_z, skip_hole,
+                                                    sub_tier, tier, pbuf, cnt, max_v, allow_grow);
+                        }
                         continue;
                     }
                 }
@@ -1188,6 +1350,7 @@ FBW_VIS_DEFAULT void fbw_gl_set_inward_meta(int slot, int valid, int bx, int by,
     g_inward_by[slot] = by;
     g_inward_bz[slot] = bz;
     g_inward_biome[slot] = biome;
+    g_inward_tier[slot] = 0;
 }
 
 FBW_VIS_DEFAULT void fbw_gl_push_inward_quad(int slot, int qidx, int packed4) {
@@ -1207,6 +1370,7 @@ FBW_VIS_DEFAULT void fbw_gl_set_l1_inward_meta(int slot, int valid, int bx, int 
     g_l1_inward_by[slot] = by;
     g_l1_inward_bz[slot] = bz;
     g_l1_inward_biome[slot] = biome;
+    g_l1_inward_tier[slot] = 0;
 }
 
 FBW_VIS_DEFAULT void fbw_gl_push_l1_inward_quad(int slot, int qidx, int packed4) {
@@ -1217,6 +1381,18 @@ FBW_VIS_DEFAULT void fbw_gl_push_l1_inward_quad(int slot, int qidx, int packed4)
     g_l1_inward[slot][base + 1] = (uint8_t)((u >> 8) & 0xffu);
     g_l1_inward[slot][base + 2] = (uint8_t)((u >> 16) & 0xffu);
     g_l1_inward[slot][base + 3] = (uint8_t)((u >> 24) & 0xffu);
+}
+
+FBW_VIS_DEFAULT void fbw_gl_set_lod_config(int disable_lod, int lod_dist_level) {
+    int dl = (disable_lod != 0) ? 1 : 0;
+    int lv = lod_dist_level;
+    if (lv < 1) lv = 1;
+    if (lv > 7) lv = 7;
+    if (dl != g_disable_lod || lv != g_lod_dist_level) {
+        g_disable_lod = dl;
+        g_lod_dist_level = lv;
+        g_inward_dirty = 1;
+    }
 }
 
 FBW_VIS_DEFAULT void fbw_gl_mark_inward_dirty(void) {
@@ -1275,6 +1451,29 @@ FBW_VIS_DEFAULT void fbw_gl_push_beam(int active, int x1_mm, int y1_mm, int z1_m
 FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
     init_gl_resources();
     if (!g_gl_ready) return;
+
+    if (!g_chunks_dirty && !g_inward_dirty && !g_disable_lod) {
+        int si;
+        for (si = 0; si < MAX_INWARD_SLOTS && !g_inward_dirty; si++) {
+            if (g_inward_valid[si]) {
+                int nt = compute_slot_tier(0, g_inward_bx[si], g_inward_by[si], g_inward_bz[si],
+                                           1.0f, 0.0f, 0.0f, 0.0f, g_inward_tier[si]);
+                if (nt != g_inward_tier[si]) g_inward_dirty = 1;
+            }
+        }
+        if (!g_inward_dirty && g_parent_valid[0]) {
+            float l1ox = -(float)g_parent_bx[0] * 16.0f;
+            float l1oy = -(float)g_parent_by[0] * 16.0f;
+            float l1oz = -(float)g_parent_bz[0] * 16.0f;
+            for (si = 0; si < MAX_L1_INWARD_SLOTS && !g_inward_dirty; si++) {
+                if (g_l1_inward_valid[si]) {
+                    int nt = compute_slot_tier(1, g_l1_inward_bx[si], g_l1_inward_by[si], g_l1_inward_bz[si],
+                                               16.0f, l1ox, l1oy, l1oz, g_l1_inward_tier[si]);
+                    if (nt != g_l1_inward_tier[si]) g_inward_dirty = 1;
+                }
+            }
+        }
+    }
 
     if (g_chunks_dirty || g_inward_dirty) {
         double ox[MAX_PARENTS], oy[MAX_PARENTS], oz[MAX_PARENTS];

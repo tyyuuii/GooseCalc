@@ -226,6 +226,7 @@ root struct fbw_state {
     genesis_mode: i32, // 1 = Peaceful Genesis Mode (no monsters)
     shrink_any: i32,   // 1 = Shrink into ANY touched block (Xar 'shrinkany')
     disable_lod: i32,  // 1 = Disable LOD optimization (load all on-screen interiors across all scales)
+    lod_dist_level: i32, // 1..7 LOD distance slider level (default 4)
 
     // Unbounded recursive 16x16x16 world stack (-128..3000)
     blocks: u8[CHUNK_VOL],
@@ -730,6 +731,14 @@ fn is_block_subdivisible(b: u8) -> i32 {
     return 0;
 }
 
+fn is_block_molecular(b: u8) -> i32 {
+    if b == BLK_STONE || b == BLK_DIRT || b == BLK_GOLD_ORE ||
+       b == BLK_CRATE || b == BLK_LOCKED_DOOR || b == BLK_SPAWNER {
+        return 1;
+    }
+    return 0;
+}
+
 fn should_render_hole_lod_ex(depth: i32, hit_layer: i32, hit_blk: u8, hit_t: f64, is_turning: i32) -> i32 {
     if depth <= 0 || hit_layer <= 0 { return 0; }
     if is_block_subdivisible(hit_blk) == 0 { return 0; }
@@ -1189,9 +1198,10 @@ fn generate_ying_forest_blocks(dst: i32, seed: u64) {
                     let is_wall = if x <= 1 || x >= 14 || z <= 1 || z >= 14 { 1 } else { 0 };
                     let is_roof = if y == 11 && wall_open == 0 && (x <= 2 || x >= 13 || z <= 2 || z >= 13) { 1 } else { 0 };
                     if is_wall != 0 || is_roof != 0 {
-                        let arch_z = if (z <= 1 || z >= 14) && x >= 6 && x <= 9 && y >= 2 && y <= 9 { 1 } else { 0 };
-                        let arch_x = if (x <= 1 || x >= 14) && z >= 6 && z <= 9 && y >= 2 && y <= 9 { 1 } else { 0 };
-                        if arch_z == 0 && arch_x == 0 {
+                        let arch_z = if (z <= 1 || z >= 14) && (x >= 6 && x <= 9 || x == 3 || x == 12) && y >= 2 && y <= 9 { 1 } else { 0 };
+                        let arch_x = if (x <= 1 || x >= 14) && (z >= 6 && z <= 9 || z == 3 || z == 12) && y >= 2 && y <= 9 { 1 } else { 0 };
+                        let roof_hole = if is_roof != 0 && ((x >= 3 && x <= 4 && z >= 11 && z <= 12) || (x >= 11 && x <= 12 && z >= 3 && z <= 4)) { 1 } else { 0 };
+                        if arch_z == 0 && arch_x == 0 && roof_hole == 0 {
                             let trim = if (x == 1 || x == 14 || z == 1 || z == 14) && (y == 2 || y == 10) { 1 } else { 0 };
                             dst_set_block(dst, x, y, z, if trim != 0 { BLK_STONE } else { BLK_BLACK_CUBE });
                         }
@@ -1204,9 +1214,13 @@ fn generate_ying_forest_blocks(dst: i32, seed: u64) {
         y = y + 1;
     }
 
-    // Embedded 2-level micro-holes inside Ying Forest's 2-block thick outer walls
+    // Embedded 2-level micro-holes & small gold pockets inside Ying Forest walls & floor
     dst_set_block(dst, 1, 5, 3, BLK_ALPHA_CUBE);
     dst_set_block(dst, 14, 5, 12, BLK_GOLD_ORE);
+    dst_set_block(dst, 2, 1, 2, BLK_GOLD_ORE);
+    dst_set_block(dst, 13, 1, 13, BLK_GOLD_ORE);
+    dst_set_block(dst, 7, 0, 7, BLK_AIR);
+    dst_set_block(dst, 8, 0, 7, BLK_AIR);
 
     // Seed-varied Ying Trees with fractal Yellow Flower buds
     let t1x = 4 + ((ls % 2) as! i32);
@@ -1295,8 +1309,8 @@ fn generate_white_flower_alpha_blocks(dst: i32, seed: u64) {
                         dst_set_block(dst, x, y, z, BLK_GLASS);
                     }
                 } else if is_wall != 0 {
-                    let arch_z = if (z <= 1 || z >= 14) && x >= 6 && x <= 9 && y >= 2 && y <= 9 { 1 } else { 0 };
-                    let arch_x = if (x <= 1 || x >= 14) && z >= 6 && z <= 9 && y >= 2 && y <= 9 { 1 } else { 0 };
+                    let arch_z = if (z <= 1 || z >= 14) && ((x >= 6 && x <= 9 && y >= 2 && y <= 9) || ((x == 3 || x == 12) && y >= 3 && y <= 7)) { 1 } else { 0 };
+                    let arch_x = if (x <= 1 || x >= 14) && ((z >= 6 && z <= 9 && y >= 2 && y <= 9) || ((z == 3 || z == 12) && y >= 3 && y <= 7)) { 1 } else { 0 };
                     if arch_z == 0 && arch_x == 0 {
                         if ((x + y + z) % 3) == 0 { dst_set_block(dst, x, y, z, BLK_PETAL_W); }
                         else { dst_set_block(dst, x, y, z, BLK_GLASS); }
@@ -1423,8 +1437,8 @@ fn generate_ice_world_blocks(dst: i32, seed: u64) {
                 if is_floor != 0 {
                     dst_set_block(dst, x, y, z, if ((x + z) & 1) == 0 { BLK_ICE } else { BLK_GLASS });
                 } else if is_wall != 0 || is_crown != 0 {
-                    let arch_z = if (z <= 1 || z >= 14) && x >= 6 && x <= 9 && y >= 2 && y <= 9 { 1 } else { 0 };
-                    let arch_x = if (x <= 1 || x >= 14) && z >= 6 && z <= 9 && y >= 2 && y <= 9 { 1 } else { 0 };
+                    let arch_z = if (z <= 1 || z >= 14) && ((x >= 6 && x <= 9 && y >= 2 && y <= 9) || ((x == 3 || x == 12) && y >= 3 && y <= 7)) { 1 } else { 0 };
+                    let arch_x = if (x <= 1 || x >= 14) && ((z >= 6 && z <= 9 && y >= 2 && y <= 9) || ((z == 3 || z == 12) && y >= 3 && y <= 7)) { 1 } else { 0 };
                     if arch_z == 0 && arch_x == 0 {
                         dst_set_block(dst, x, y, z, if ((x + y + z) % 4) == 0 { BLK_PETAL_W } else { BLK_ICE });
                     }
@@ -1473,8 +1487,8 @@ fn generate_desert_world_blocks(dst: i32, seed: u64) {
                 if is_floor != 0 {
                     dst_set_block(dst, x, y, z, if (x == 8 || z == 8) { BLK_GOLD_ORE } else { BLK_SAND });
                 } else if is_wall != 0 {
-                    let arch_z = if (z <= 1 + inset || z >= 14 - inset) && x >= 6 && x <= 9 && y >= 2 && y <= 8 { 1 } else { 0 };
-                    let arch_x = if (x <= 1 + inset || x >= 14 - inset) && z >= 6 && z <= 9 && y >= 2 && y <= 8 { 1 } else { 0 };
+                    let arch_z = if (z <= 1 + inset || z >= 14 - inset) && ((x >= 6 && x <= 9 && y >= 2 && y <= 8) || ((x == 3 || x == 12) && y >= 3 && y <= 6)) { 1 } else { 0 };
+                    let arch_x = if (x <= 1 + inset || x >= 14 - inset) && ((z >= 6 && z <= 9 && y >= 2 && y <= 8) || ((z == 3 || z == 12) && y >= 3 && y <= 6)) { 1 } else { 0 };
                     if arch_z == 0 && arch_x == 0 {
                         dst_set_block(dst, x, y, z, if (y % 4) == 0 { BLK_GOLD_ORE } else { BLK_SAND });
                     }
@@ -1546,8 +1560,8 @@ fn generate_interior_biome_blocks(dst: i32, biome: i32, depth: i32, seed: u64) {
                     if ((x + z) % 5) == 0 { dst_set_block(dst, x, y, z, trim_blk); }
                     else { dst_set_block(dst, x, y, z, wall_blk); }
                 } else if is_rim != 0 {
-                    let arch_x = if (z <= 1 || z >= 14) && x >= 5 && x <= 10 && y >= 2 && y <= 8 { 1 } else { 0 };
-                    let arch_z = if (x <= 1 || x >= 14) && z >= 5 && z <= 10 && y >= 2 && y <= 8 { 1 } else { 0 };
+                    let arch_x = if (z <= 1 || z >= 14) && ((x >= 5 && x <= 10 && y >= 2 && y <= 8) || ((x == 3 || x == 12) && y >= 3 && y <= 7)) { 1 } else { 0 };
+                    let arch_z = if (x <= 1 || x >= 14) && ((z >= 5 && z <= 10 && y >= 2 && y <= 8) || ((z == 3 || z == 12) && y >= 3 && y <= 7)) { 1 } else { 0 };
                     if arch_x == 0 && arch_z == 0 {
                         if ((x + y + z) % 5) == 0 { dst_set_block(dst, x, y, z, trim_blk); }
                         else { dst_set_block(dst, x, y, z, wall_blk); }
@@ -1663,13 +1677,13 @@ fn populate_interior_biome_entities(biome: i32, depth: i32) {
 }
 
 fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
-    // Material-native nested sub-worlds: every non-portal block subdivides into a unique
-    // 16x16x16 structure matching its physical material and seed!
+    // Authentic Xar sub-chunks: multi-path openings across all 6 faces, molecular micro-fissures,
+    // and small gold pockets that reveal deeper paths when shrunk further!
     let _ = depth;
     var ls = splitmix64(seed ^ ((blk as u64) * 0x517cc1b7));
     let thick: i32 = 2 + ((ls & 1) as! i32);
 
-    // 1) Organic Leaves canopy: airy dappled cluster with wood boughs & flower buds
+    // 1) Organic Leaves canopy: central cross + corner/offset multi-path bough passages
     if blk == BLK_LEAVES {
         var y: i32 = 0;
         while y < CHUNK_DIM {
@@ -1680,7 +1694,10 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
                     let shell = if x <= 1 || x >= 14 || y <= 1 || y >= 14 || z <= 1 || z >= 14 { 1 } else { 0 };
                     let hole = if (x >= 5 && x <= 10 && y >= 5 && y <= 10) ||
                                   (y >= 5 && y <= 10 && z >= 5 && z <= 10) ||
-                                  (x >= 5 && x <= 10 && z >= 5 && z <= 10) { 1 } else { 0 };
+                                  (x >= 5 && x <= 10 && z >= 5 && z <= 10) ||
+                                  (x >= 2 && x <= 3 && y >= 2 && y <= 3) ||
+                                  (y >= 12 && y <= 13 && z >= 12 && z <= 13) ||
+                                  (x >= 12 && x <= 13 && z >= 2 && z <= 3) { 1 } else { 0 };
                     if shell != 0 && hole == 0 {
                         let hv = splitmix64(ls ^ ((x * 911 + y * 353 + z * 197) as u64));
                         if (hv % 5) != 0 {
@@ -1701,10 +1718,11 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
         }
         dst_set_block(dst, 8, 5, 8, BLK_FLOWER_Y_CORE);
         dst_set_block(dst, 3, 2, 3, BLK_WHITE_FLOWER);
+        dst_set_block(dst, 13, 2, 13, BLK_GOLD_ORE);
         return;
     }
 
-    // 2) Wood trunk: vertical bark cylinder with tree-ring platforms & golden sap core
+    // 2) Wood trunk: multi-tier bark fissures on sides + open top/bottom sap-core shafts
     if blk == BLK_WOOD {
         var y: i32 = 0;
         while y < CHUNK_DIM {
@@ -1716,12 +1734,15 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
                     let dz = z - 7;
                     let r2 = dx * dx + dz * dz;
                     if r2 >= 28 && r2 <= 58 {
-                        let doorway = if y >= 5 && y <= 10 && (x >= 6 && x <= 9 || z >= 6 && z <= 9) { 1 } else { 0 };
+                        let doorway = if (y >= 5 && y <= 10 && (x >= 6 && x <= 9 || z >= 6 && z <= 9)) ||
+                                         (y >= 2 && y <= 3 && (x == 3 || z == 12)) ||
+                                         (y >= 12 && y <= 13 && (x == 12 || z == 3)) { 1 } else { 0 };
                         if doorway == 0 {
                             dst_set_block(dst, x, y, z, if (y % 4) == 0 { BLK_GRASS } else { BLK_WOOD });
                         }
                     } else if y <= 1 && r2 < 28 {
-                        dst_set_block(dst, x, y, z, BLK_DIRT);
+                        let shaft = if (x >= 7 && x <= 8 && z >= 7 && z <= 8) || (x >= 3 && x <= 4 && z >= 11 && z <= 12) { 1 } else { 0 };
+                        if shaft == 0 { dst_set_block(dst, x, y, z, BLK_DIRT); }
                     }
                     x = x + 1;
                 }
@@ -1732,10 +1753,11 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
         dst_set_block(dst, 8, 2, 8, BLK_GOLD_ORE);
         dst_set_block(dst, 5, 2, 8, BLK_CRATE);
         dst_set_block(dst, 10, 2, 8, BLK_ALPHA_CUBE);
+        dst_set_block(dst, 12, 2, 4, BLK_GOLD_ORE);
         return;
     }
 
-    // 3) Ice / Glass crystal prism gallery
+    // 3) Ice / Glass crystal prism gallery with multi-path 6-face prism passages
     if blk == BLK_ICE || blk == BLK_GLASS {
         var y: i32 = 0;
         while y < CHUNK_DIM {
@@ -1746,7 +1768,10 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
                     let rim = if x <= 1 || x >= 14 || z <= 1 || z >= 14 || y <= 1 || y >= 14 { 1 } else { 0 };
                     let win = if (x >= 5 && x <= 10 && y >= 5 && y <= 10) ||
                                  (z >= 5 && z <= 10 && y >= 5 && y <= 10) ||
-                                 (x >= 5 && x <= 10 && z >= 5 && z <= 10) { 1 } else { 0 };
+                                 (x >= 5 && x <= 10 && z >= 5 && z <= 10) ||
+                                 (x >= 2 && x <= 3 && y >= 12 && y <= 13) ||
+                                 (z >= 12 && z <= 13 && y >= 2 && y <= 3) ||
+                                 (x >= 12 && x <= 13 && z >= 12 && z <= 13) { 1 } else { 0 };
                     if rim != 0 && win == 0 {
                         dst_set_block(dst, x, y, z, if ((x + y + z) & 1) == 0 { BLK_ICE } else { BLK_GLASS });
                     }
@@ -1759,10 +1784,12 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
         dst_set_block(dst, 8, 3, 8, BLK_ICE_WORLD);
         dst_set_block(dst, 4, 2, 4, BLK_ALPHA_CUBE);
         dst_set_block(dst, 11, 2, 11, BLK_UPG_ARMOR);
+        dst_set_block(dst, 13, 2, 2, BLK_GOLD_ORE);
         return;
     }
 
-    // 4) Architectural / Mineral / Vault hollow block (seed-varied)
+    // 4) Architectural / Mineral / Molecular / Vault hollow block (multi-path 6 faces + gold pockets)
+    let is_mol = is_block_molecular(blk);
     let trim_blk: u8 =
         if blk == BLK_WALL_TUT || blk == BLK_STONE { BLK_STONE }
         else if blk == BLK_GRASS || blk == BLK_DIRT { BLK_WOOD }
@@ -1772,7 +1799,8 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
         else if blk == BLK_GOLD_ORE || blk == BLK_CRATE { BLK_GOLD_ORE }
         else { BLK_SAND };
 
-    let has_floor_pit: i32 = if (seed & 4) != 0 { 1 } else { 0 };
+    let off_a: i32 = 2 + (((ls >> 3) % 2) as! i32);
+    let off_b: i32 = 12 + (((ls >> 5) % 2) as! i32);
     var y: i32 = 0;
     while y < CHUNK_DIM {
         var z: i32 = 0;
@@ -1785,15 +1813,28 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
                 let in_y_top = if y >= CHUNK_DIM - thick { 1 } else { 0 };
 
                 if in_x_wall != 0 || in_z_wall != 0 || in_y_bot != 0 || in_y_top != 0 {
-                    // Wide cardinal 3D portals piercing through walls
-                    let tunnel_z = if x >= 5 && x <= 10 && y >= 5 && y <= 10 && in_x_wall == 0 && in_y_bot == 0 && in_y_top == 0 { 1 } else { 0 };
-                    let tunnel_x = if z >= 5 && z <= 10 && y >= 5 && y <= 10 && in_z_wall == 0 && in_y_bot == 0 && in_y_top == 0 { 1 } else { 0 };
-                    let sky_hole = if in_y_top != 0 && x >= 5 && x <= 10 && z >= 5 && z <= 10 { 1 } else { 0 };
-                    let pit_hole = if has_floor_pit != 0 && in_y_bot != 0 && x >= 7 && x <= 8 && z >= 7 && z <= 8 { 1 } else { 0 };
-                    let alcove_front = if z == 0 && x >= 2 && x <= 3 && y >= 2 && y <= 3 { 1 } else { 0 };
-                    let alcove_side = if x == 15 && z >= 12 && z <= 13 && y >= 12 && y <= 13 { 1 } else { 0 };
+                    // Multi-path openings across ALL 6 faces: center shafts + offset corner corridors!
+                    // Molecular blocks keep narrower 2x2 micro-fissures rather than wide 6x6 halls.
+                    let c_lo: i32 = if is_mol != 0 { 6 } else { 5 };
+                    let c_hi: i32 = if is_mol != 0 { 9 } else { 10 };
+                    let tunnel_z = if ((x >= c_lo && x <= c_hi && y >= c_lo && y <= c_hi) ||
+                                       (x >= off_a && x <= off_a + 1 && y >= off_a && y <= off_a + 1) ||
+                                       (x >= off_b && x <= off_b + 1 && y >= off_b && y <= off_b + 1)) &&
+                                      in_x_wall == 0 && in_y_bot == 0 && in_y_top == 0 { 1 } else { 0 };
+                    let tunnel_x = if ((z >= c_lo && z <= c_hi && y >= c_lo && y <= c_hi) ||
+                                       (z >= off_b && z <= off_b + 1 && y >= off_a && y <= off_a + 1) ||
+                                       (z >= off_a && z <= off_a + 1 && y >= off_b && y <= off_b + 1)) &&
+                                      in_z_wall == 0 && in_y_bot == 0 && in_y_top == 0 { 1 } else { 0 };
+                    let sky_hole = if in_y_top != 0 && ((x >= c_lo && x <= c_hi && z >= c_lo && z <= c_hi) ||
+                                                        (x >= off_a && x <= off_a + 1 && z >= off_a && z <= off_a + 1) ||
+                                                        (x >= off_b && x <= off_b + 1 && z >= off_b && z <= off_b + 1)) { 1 } else { 0 };
+                    let pit_hole = if in_y_bot != 0 && ((x >= 7 && x <= 8 && z >= 7 && z <= 8) ||
+                                                        (x >= off_b && x <= off_b + 1 && z >= off_a && z <= off_a + 1)) { 1 } else { 0 };
+                    // Small recessed gold-pocket alcoves on outer walls (dead-ends until shrunk further!)
+                    let pocket_a = if z == 0 && x >= 11 && x <= 12 && y >= 2 && y <= 3 { 1 } else { 0 };
+                    let pocket_b = if x == 15 && z >= 2 && z <= 3 && y >= 11 && y <= 12 { 1 } else { 0 };
 
-                    if tunnel_z == 0 && tunnel_x == 0 && sky_hole == 0 && pit_hole == 0 && alcove_front == 0 && alcove_side == 0 {
+                    if tunnel_z == 0 && tunnel_x == 0 && sky_hole == 0 && pit_hole == 0 && pocket_a == 0 && pocket_b == 0 {
                         let inner_skin = if x == thick - 1 || x == CHUNK_DIM - thick || z == thick - 1 || z == CHUNK_DIM - thick || y == thick - 1 { 1 } else { 0 };
                         dst_set_block(dst, x, y, z, if inner_skin != 0 && ((x + y + z) % 3) == 0 { trim_blk } else { blk });
                     }
@@ -1804,6 +1845,10 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
         }
         y = y + 1;
     }
+
+    // Place Gold Ore anchors right inside the small pockets so shrinking into/past them opens deeper worlds!
+    dst_set_block(dst, 11, 2, 1, BLK_GOLD_ORE);
+    dst_set_block(dst, 14, 11, 2, BLK_GOLD_ORE);
 
     // Seed-varied interior architecture
     let variant = (ls % 3) as! i32;
@@ -1834,6 +1879,7 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
         dst_set_block(dst, 8, thick, 8, BLK_KEY_BLOCK);
         dst_set_block(dst, 8, thick + 1, 8, BLK_GOLD_ORE);
         dst_set_block(dst, 5, thick, 8, BLK_CRATE);
+        dst_set_block(dst, 10, thick, 8, BLK_BLACK_CUBE);
     } else if blk == BLK_SPAWNER {
         dst_set_block(dst, 8, thick, 8, BLK_CORE_GATE);
     } else {
@@ -1866,13 +1912,16 @@ fn generate_air_subchunk_blocks(dst: i32, biome: i32, seed: u64, air_depth: i32)
         else { BLK_BLACK_CUBE };
 
     if air_depth <= 1 {
-        // Depth 1 in open air: only 1 distant floating beacon mote so the giant parent room stays crisp
+        // Depth 1 in open air: 1 floating beacon mote + 1 subtle gold-pocket shard when inside a biome
         let ox: i32 = if (ls & 1) != 0 { 13 } else { 2 };
         ls = splitmix64(ls);
         let oy: i32 = if (ls & 1) != 0 { 12 } else { 2 };
         ls = splitmix64(ls);
         let oz: i32 = if (ls & 1) != 0 { 13 } else { 2 };
         dst_set_block(dst, ox, oy, oz, mote_blk);
+        if biome != BIOME_SPACE {
+            dst_set_block(dst, 15 - ox, 4, 15 - oz, BLK_GOLD_ORE);
+        }
         return;
     }
 
@@ -2183,19 +2232,47 @@ fn shrink_into_ex(bx: i32, by: i32, bz: i32, target_blk: u8, forced_biome: i32, 
 
     load_current_chunk();
 
-    // Ensure collision-free arrival while staying as close as possible to the continuous entry point
+    // Preserve the exact proportional entry path: search nearby open sub-voxels around
+    // the entry coordinate first before falling back inward toward the chamber interior.
     if point_collides(new_px, new_py, new_pz) != 0 {
-        var step_in: i32 = 0;
-        while point_collides(new_px, new_py, new_pz) != 0 && step_in < 10 {
-            new_px = new_px + (8.0 - new_px) * 0.25;
-            new_py = new_py + (6.0 - new_py) * 0.25;
-            new_pz = new_pz + (8.0 - new_pz) * 0.25;
-            step_in = step_in + 1;
+        var found_near: i32 = 0;
+        var rad: i32 = 1;
+        while rad <= 4 && found_near == 0 {
+            let off_s = (rad as f64) * 0.85;
+            var dy_i: i32 = -1;
+            while dy_i <= 1 && found_near == 0 {
+                var dz_i: i32 = -1;
+                while dz_i <= 1 && found_near == 0 {
+                    var dx_i: i32 = -1;
+                    while dx_i <= 1 && found_near == 0 {
+                        let tx = fclamp(new_px + (dx_i as f64) * off_s, 0.4, 15.6);
+                        let ty = fclamp(new_py + (dy_i as f64) * off_s, 0.4, 15.6);
+                        let tz = fclamp(new_pz + (dz_i as f64) * off_s, 0.4, 15.6);
+                        if point_collides(tx, ty, tz) == 0 {
+                            new_px = tx; new_py = ty; new_pz = tz;
+                            found_near = 1;
+                        }
+                        dx_i = dx_i + 1;
+                    }
+                    dz_i = dz_i + 1;
+                }
+                dy_i = dy_i + 1;
+            }
+            rad = rad + 1;
         }
-        if point_collides(new_px, new_py, new_pz) != 0 {
-            new_px = 8.0; new_py = 3.2; new_pz = 6.5;
+        if found_near == 0 {
+            var step_in: i32 = 0;
+            while point_collides(new_px, new_py, new_pz) != 0 && step_in < 10 {
+                new_px = new_px + (8.0 - new_px) * 0.25;
+                new_py = new_py + (6.0 - new_py) * 0.25;
+                new_pz = new_pz + (8.0 - new_pz) * 0.25;
+                step_in = step_in + 1;
+            }
             if point_collides(new_px, new_py, new_pz) != 0 {
-                new_px = 8.0; new_py = 8.0; new_pz = 8.0;
+                new_px = 8.0; new_py = 3.2; new_pz = 6.5;
+                if point_collides(new_px, new_py, new_pz) != 0 {
+                    new_px = 8.0; new_py = 8.0; new_pz = 8.0;
+                }
             }
         }
     }
@@ -2730,26 +2807,58 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
         return 1;
     }
 
-    // Neighbor macro voxel is SOLID: allow physical flight through its 3D tunnel holes!
+    // Neighbor macro voxel is SOLID: allow physical flight through its 3D multi-path tunnels!
+    // Molecular-dense blocks block coarse entry unless entering a wide open fissure or shrunk very small.
+    let scale_diff = st.depth - anc_d;
+    let mol_locked = if is_block_molecular(tblk) != 0 && st.shrink_any == 0 && scale_diff < 2 { 1 } else { 0 };
     if is_block_subdivisible(tblk) != 0 || (st.shrink_any != 0 && st.ring_cd_ms <= 0) {
         var top_seed: u64 = resolve_child_frame_seed(anc_f.seed, anc_d, target_bx, target_by, target_bz, tblk);
         var top_bio: i32 = resolve_child_frame_biome(anc_f.seed, anc_d, anc_f.biome, target_bx, target_by, target_bz, tblk, -1);
 
         if cur_d == st.depth {
             generate_chunk_blocks_to(5, st.depth, top_bio, tblk, top_seed, 0);
-            if scratch_point_collides(nx_w, ny_w, nz_w) == 0 {
+            var hit_ok = if scratch_point_collides(nx_w, ny_w, nz_w) == 0 { 1 } else { 0 };
+            var adj_x = nx_w;
+            var adj_y = ny_w;
+            var adj_z = nz_w;
+            if hit_ok == 0 && mol_locked == 0 {
+                // Smoothly align into nearby off-center sub-path opening within +-0.75 sub-voxels
+                var ty_i: i32 = -1;
+                while ty_i <= 1 && hit_ok == 0 {
+                    var tx_i: i32 = -1;
+                    while tx_i <= 1 && hit_ok == 0 {
+                        let px_t = if axis == 0 { nx_w } else { fclamp(nx_w + (tx_i as f64) * 0.65, 0.35, 15.65) };
+                        let py_t = if axis == 1 { ny_w } else { fclamp(ny_w + (ty_i as f64) * 0.65, 0.35, 15.65) };
+                        let pz_t = if axis == 2 { nz_w } else { fclamp(nz_w + ((if axis == 0 { tx_i } else { ty_i }) as f64) * 0.65, 0.35, 15.65) };
+                        if scratch_point_collides(px_t, py_t, pz_t) == 0 {
+                            adj_x = px_t; adj_y = py_t; adj_z = pz_t;
+                            hit_ok = 1;
+                        }
+                        tx_i = tx_i + 1;
+                    }
+                    ty_i = ty_i + 1;
+                }
+            }
+            if hit_ok != 0 {
                 set_frame(cur_d, ScaleFrame {
                     bx: target_bx, by: target_by, bz: target_bz,
                     biome: top_bio, parent_block: tblk, seed: top_seed
                 });
                 load_current_chunk();
-                st.px = nx_w;
-                st.py = ny_w;
-                st.pz = nz_w;
+                st.px = adj_x;
+                st.py = adj_y;
+                st.pz = adj_z;
                 st.flash_ms = 120;
                 st.flash_rgb = pack_rgb(40, 235, 130);
                 set_status_msg("Entered 3D fractal tunnel!", 1400);
                 return 1;
+            } else if mol_locked != 0 {
+                if st.msg_ms <= 0 {
+                    set_status_msg("Molecular block! Shrink smaller (SHRK) to reveal inner paths.", 1500);
+                }
+                return 0;
+            }
+            if false {
             } else if st.shrink_any != 0 && st.ring_cd_ms <= 0 {
                 set_frame(cur_d, ScaleFrame {
                     bx: target_bx, by: target_by, bz: target_bz,
@@ -2786,7 +2895,28 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
                 wd = wd + 1;
             }
             generate_chunk_blocks_to(5, st.depth, rbio, BLK_AIR, rseed, rair);
-            if scratch_point_collides(nx_w, ny_w, nz_w) == 0 {
+            var d_hit_ok = if scratch_point_collides(nx_w, ny_w, nz_w) == 0 { 1 } else { 0 };
+            var d_ax = nx_w;
+            var d_ay = ny_w;
+            var d_az = nz_w;
+            if d_hit_ok == 0 && mol_locked == 0 {
+                var ty_i: i32 = -1;
+                while ty_i <= 1 && d_hit_ok == 0 {
+                    var tx_i: i32 = -1;
+                    while tx_i <= 1 && d_hit_ok == 0 {
+                        let px_t = if axis == 0 { nx_w } else { fclamp(nx_w + (tx_i as f64) * 0.75, 0.35, 15.65) };
+                        let py_t = if axis == 1 { ny_w } else { fclamp(ny_w + (ty_i as f64) * 0.75, 0.35, 15.65) };
+                        let pz_t = if axis == 2 { nz_w } else { fclamp(nz_w + ((if axis == 0 { tx_i } else { ty_i }) as f64) * 0.75, 0.35, 15.65) };
+                        if scratch_point_collides(px_t, py_t, pz_t) == 0 {
+                            d_ax = px_t; d_ay = py_t; d_az = pz_t;
+                            d_hit_ok = 1;
+                        }
+                        tx_i = tx_i + 1;
+                    }
+                    ty_i = ty_i + 1;
+                }
+            }
+            if d_hit_ok != 0 {
                 var cseed = top_seed;
                 set_frame(cur_d, ScaleFrame {
                     bx: target_bx, by: target_by, bz: target_bz,
@@ -2806,9 +2936,9 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
                     wd = wd + 1;
                 }
                 load_current_chunk();
-                st.px = nx_w;
-                st.py = ny_w;
-                st.pz = nz_w;
+                st.px = d_ax;
+                st.py = d_ay;
+                st.pz = d_az;
                 return 1;
             }
         }
@@ -3317,28 +3447,30 @@ fn warp_to_marker(slot: i32) -> i32 {
 
 fn shrink_targeted_block() {
     st.ring_cd_ms = 0;
-    if st.shrink_any != 0 {
-        var fx: f64 = 0.0;
-        var fy: f64 = 0.0;
-        var fz: f64 = 0.0;
-        camera_forward(fx, fy, fz);
-        var t: f64 = 0.4;
-        while t <= 4.5 {
-            let hx = st.px + fx * t;
-            let hy = st.py + fy * t;
-            let hz = st.pz + fz * t;
-            let bx = ffloor(hx);
-            let by = ffloor(hy);
-            let bz = ffloor(hz);
-            let b = get_block(bx, by, bz);
-            if b != BLK_AIR {
+    var fx: f64 = 0.0;
+    var fy: f64 = 0.0;
+    var fz: f64 = 0.0;
+    camera_forward(fx, fy, fz);
+    let max_t: f64 = if st.shrink_any != 0 { 4.5 } else { 2.1 };
+    var t: f64 = 0.4;
+    while t <= max_t {
+        let hx = st.px + fx * t;
+        let hy = st.py + fy * t;
+        let hz = st.pz + fz * t;
+        let bx = ffloor(hx);
+        let by = ffloor(hy);
+        let bz = ffloor(hz);
+        let b = get_block(bx, by, bz);
+        if b != BLK_AIR {
+            if st.shrink_any != 0 || (is_block_subdivisible(b) != 0 && (is_block_molecular(b) == 0 || st.depth >= 1)) {
                 shrink_into_ex(bx, by, bz, b, -1, 1, hx - fx * 0.35, hy - fy * 0.35, hz - fz * 0.35);
                 return;
             }
-            t = t + 0.35;
+            break;
         }
+        t = t + 0.35;
     }
-    // Always shrink YOU 16x in-place in open air so surrounding blocks become giant 3D walls with visible holes!
+    // Shrink 16x in-place in open air (including inside small dead-end pockets to reveal deeper paths!)
     let pbx = clamp_i(ffloor(st.px), 0, 15);
     let pby = clamp_i(ffloor(st.py), 0, 15);
     let pbz = clamp_i(ffloor(st.pz), 0, 15);

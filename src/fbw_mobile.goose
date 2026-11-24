@@ -81,28 +81,37 @@ struct MobileController {
     inw_qyaw: i32,
     inw_qpitch: i32,
     inw_qlod: i32,
+    inw_qlod_dist: i32,
     inw_qrev: i32,
+    inw_pending: i32,
+    frame_tick: i32,
     inw_valid: i32[256],
     inw_bx: i32[256],
     inw_by: i32[256],
     inw_bz: i32[256],
     inw_blk: u8[256],
     inw_seed: u64[256],
+    inw_last_seen: i32[256],
     l1_inw_valid: i32[64],
     l1_inw_bx: i32[64],
     l1_inw_by: i32[64],
     l1_inw_bz: i32[64],
     l1_inw_blk: u8[64],
     l1_inw_seed: u64[64],
+    l1_inw_last_seen: i32[64],
+    l0_slot_grid: i32[4096],
+    l1_slot_grid: i32[4096],
     // BSS scratch arrays for inward candidate selection (avoid large stack allocs)
     cand_x: i32[256],
     cand_y: i32[256],
     cand_z: i32[256],
     cand_sc: f64[256],
+    cand_pin: i32[256],
     l1_cand_x: i32[64],
     l1_cand_y: i32[64],
     l1_cand_z: i32[64],
     l1_cand_sc: f64[64],
+    l1_cand_pin: i32[64],
     // Held continuous flags
     hold_up: i32,
     hold_dn: i32,
@@ -225,13 +234,20 @@ fn fbw_mobile_enter() {
         st.genesis_mode = 0;
         st.true_up = 1;
         st.show_minimap = 1;
+        st.lod_dist_level = 4;
         init_new_game();
         g_mob.initialized = 1;
+    }
+    if st.lod_dist_level < 1 || st.lod_dist_level > 7 {
+        st.lod_dist_level = 4;
     }
     st.screen = SCREEN_PLAY;
     g_mob.last_ms = fbw_now_ms();
     g_mob.sync_force = 1;
     g_mob.inw_force = 1;
+    g_mob.inw_pending = 0;
+    g_mob.frame_tick = 1;
+    g_mob.inw_qlod_dist = 0;
     g_mob.hold_up = 0;
     g_mob.hold_dn = 0;
     g_mob.hold_fire = 0;
@@ -246,15 +262,26 @@ fn fbw_mobile_enter() {
         i = i + 1;
     }
     i = 0;
+    while i < 4096 {
+        g_mob.l0_slot_grid[i] = -1;
+        g_mob.l1_slot_grid[i] = -1;
+        i = i + 1;
+    }
+    i = 0;
     while i < MAX_INWARD_GL {
         g_mob.inw_valid[i] = 0;
+        g_mob.inw_last_seen[i] = 0;
+        fbw_gl_set_inward_meta(i, 0, 0, 0, 0, 0);
         i = i + 1;
     }
     i = 0;
     while i < MAX_L1_INWARD_GL {
         g_mob.l1_inw_valid[i] = 0;
+        g_mob.l1_inw_last_seen[i] = 0;
+        fbw_gl_set_l1_inward_meta(i, 0, 0, 0, 0, 0);
         i = i + 1;
     }
+    fbw_gl_mark_inward_dirty();
 }
 
 fn fbw_should_exit_to_calc() -> i32 {
@@ -386,14 +413,17 @@ fn sync_inward_to_gl() {
     let qyaw = ffloor(st.yaw * 3.0);
     let qpitch = ffloor(st.pitch * 3.0);
     let qlod = st.disable_lod;
-
+    let qlod_dist = clamp_i(st.lod_dist_level, 1, 7);
     if g_mob.inw_force == 0 &&
+       g_mob.inw_pending == 0 &&
        g_mob.inw_qrev == st.chunk_rev &&
        g_mob.inw_qpx == qpx && g_mob.inw_qpy == qpy && g_mob.inw_qpz == qpz &&
-       g_mob.inw_qyaw == qyaw && g_mob.inw_qpitch == qpitch && g_mob.inw_qlod == qlod {
+       g_mob.inw_qyaw == qyaw && g_mob.inw_qpitch == qpitch &&
+       g_mob.inw_qlod == qlod && g_mob.inw_qlod_dist == qlod_dist {
         return;
     }
-
+    let was_forced = g_mob.inw_force != 0;
+    let rev_changed = g_mob.inw_qrev != st.chunk_rev;
     g_mob.inw_force = 0;
     g_mob.inw_qrev = st.chunk_rev;
     g_mob.inw_qpx = qpx;
@@ -402,6 +432,64 @@ fn sync_inward_to_gl() {
     g_mob.inw_qyaw = qyaw;
     g_mob.inw_qpitch = qpitch;
     g_mob.inw_qlod = qlod;
+    g_mob.inw_qlod_dist = qlod_dist;
+    g_mob.frame_tick = g_mob.frame_tick + 1;
+    let tick = g_mob.frame_tick;
+
+    let pseed = cur_seed();
+    let pdepth = st.depth;
+    let pbio = cur_biome();
+    let l1_seed = st.parent_seed[0];
+    let l1_depth = st.parent_depth[0];
+    let l1_bio = st.parent_biome[0];
+    var any_dirty: i32 = 0;
+
+    // Revalidate pinned slots only when chunk_rev changed (block edited or scale shifted)
+    if rev_changed {
+        var rs: i32 = 0;
+        while rs < MAX_INWARD_GL {
+            if g_mob.inw_valid[rs] != 0 {
+                let ox = g_mob.inw_bx[rs];
+                let oy = g_mob.inw_by[rs];
+                let oz = g_mob.inw_bz[rs];
+                let nblk = get_block(ox, oy, oz);
+                let nseed = resolve_child_frame_seed(pseed, pdepth, ox, oy, oz, nblk);
+                if nblk == BLK_AIR || is_block_subdivisible(nblk) == 0 ||
+                   nblk != g_mob.inw_blk[rs] || nseed != g_mob.inw_seed[rs] {
+                    let oidx = (oy << 8) | (oz << 4) | ox;
+                    if g_mob.l0_slot_grid[oidx] == rs { g_mob.l0_slot_grid[oidx] = -1; }
+                    g_mob.inw_valid[rs] = 0;
+                    fbw_gl_set_inward_meta(rs, 0, 0, 0, 0, 0);
+                    any_dirty = 1;
+                }
+            }
+            rs = rs + 1;
+        }
+        rs = 0;
+        let l1_v = st.parent_valid[0];
+        let l1_hx = st.parent_bx[0];
+        let l1_hy = st.parent_by[0];
+        let l1_hz = st.parent_bz[0];
+        while rs < MAX_L1_INWARD_GL {
+            if g_mob.l1_inw_valid[rs] != 0 {
+                let ox = g_mob.l1_inw_bx[rs];
+                let oy = g_mob.l1_inw_by[rs];
+                let oz = g_mob.l1_inw_bz[rs];
+                let nblk = l1_blk_at(ox, oy, oz);
+                let nseed = resolve_child_frame_seed(l1_seed, l1_depth, ox, oy, oz, nblk);
+                if l1_v == 0 || (ox == l1_hx && oy == l1_hy && oz == l1_hz) ||
+                   nblk == BLK_AIR || is_block_subdivisible(nblk) == 0 ||
+                   nblk != g_mob.l1_inw_blk[rs] || nseed != g_mob.l1_inw_seed[rs] {
+                    let oidx = (oy << 8) | (oz << 4) | ox;
+                    if g_mob.l1_slot_grid[oidx] == rs { g_mob.l1_slot_grid[oidx] = -1; }
+                    g_mob.l1_inw_valid[rs] = 0;
+                    fbw_gl_set_l1_inward_meta(rs, 0, 0, 0, 0, 0);
+                    any_dirty = 1;
+                }
+            }
+            rs = rs + 1;
+        }
+    }
 
     let cp = fcos(st.pitch);
     let sp = fsin(st.pitch);
@@ -409,7 +497,6 @@ fn sync_inward_to_gl() {
     let sy = fsin(st.yaw);
     let cr = fcos(st.roll);
     let sr = fsin(st.roll);
-
     let fx = cp * cy;
     let fy = sp;
     let fz = cp * sy;
@@ -418,21 +505,23 @@ fn sync_inward_to_gl() {
     let ux0 = -sp * cy;
     let uy0 = cp;
     let uz0 = -sp * sy;
-
     let rx = rx0 * cr + ux0 * sr;
     let ry = uy0 * sr;
     let rz = rz0 * cr + uz0 * sr;
     let ux = ux0 * cr - rx0 * sr;
     let uy = uy0 * cr;
     let uz = uz0 * cr - rz0 * sr;
-
     let aspect: f64 = if g_mob.lay.h > 0 { (g_mob.lay.w as f64) / (g_mob.lay.h as f64) } else { 1.777 };
     let tan_y: f64 = 0.74;
     let tan_x: f64 = 0.74 * aspect;
-
     let no_lod = st.disable_lod != 0;
-    let l0_cap = if no_lod { MAX_INWARD_GL } else { LOD_NORM_L0_CAP };
-    let l1_cap = if no_lod { MAX_L1_INWARD_GL } else { LOD_NORM_L1_CAP };
+    let lf = qlod_dist as f64;
+    let l0_cap = if no_lod { MAX_INWARD_GL } else { clamp_i(28 + qlod_dist * 18, 46, 154) };
+    let l1_cap = if no_lod { MAX_L1_INWARD_GL } else { clamp_i(8 + qlod_dist * 4, 12, 36) };
+    let l0_base_d2 = 30.0 + lf * 38.0;
+    let l0_portal_d2 = l0_base_d2 * 1.45;
+    let l1_base_d2 = 1600.0 + lf * 1800.0;
+    let l1_portal_d2 = l1_base_d2 * 1.45;
 
     // 1. Select Layer 0 (1x -> 1/16x) on-screen candidates
     var cand_cnt: i32 = 0;
@@ -451,7 +540,7 @@ fn sync_inward_to_gl() {
                         let dz = (z as f64) + 0.5 - st.pz;
                         let d2 = dx * dx + dy * dy + dz * dz;
                         let is_portal = is_block_shrinkable(blk);
-                        let dist_ok = if no_lod { true } else { d2 <= (if is_portal != 0 { 260.0 } else { 180.0 }) };
+                        let dist_ok = if no_lod { true } else { d2 <= (if is_portal != 0 { l0_portal_d2 } else { l0_base_d2 }) };
                         if dist_ok {
                             let touch_d2: f64 = if no_lod { 3.0 } else { 6.5 };
                             let vis = if d2 < touch_d2 { 1 } else {
@@ -514,7 +603,7 @@ fn sync_inward_to_gl() {
                                 let dz = ((z as f64) + 0.5 - (hz as f64)) * 16.0 - st.pz;
                                 let d2 = dx * dx + dy * dy + dz * dz;
                                 let is_portal = is_block_shrinkable(blk);
-                                let dist_ok = if no_lod { true } else { d2 <= (if is_portal != 0 { 11000.0 } else { 7500.0 }) };
+                                let dist_ok = if no_lod { true } else { d2 <= (if is_portal != 0 { l1_portal_d2 } else { l1_base_d2 }) };
                                 if dist_ok {
                                     let touch_d2: f64 = if no_lod { 300.0 } else { 400.0 };
                                     let vis = if d2 < touch_d2 { 1 } else {
@@ -557,102 +646,258 @@ fn sync_inward_to_gl() {
         }
     }
 
-    let pseed = cur_seed();
-    let pdepth = st.depth;
-    let pbio = cur_biome();
-    var any_dirty: i32 = 0;
+    // 3. Sticky Cache Match & Per-Frame Upload Budget for Layer 0
+    var l0_unpinned: i32 = 0;
+    var i: i32 = 0;
+    while i < cand_cnt {
+        let cx = g_mob.cand_x[i];
+        let cy = g_mob.cand_y[i];
+        let cz = g_mob.cand_z[i];
+        let idx = (cy << 8) | (cz << 4) | cx;
+        let s = g_mob.l0_slot_grid[idx];
+        if s >= 0 && s < MAX_INWARD_GL && g_mob.inw_valid[s] != 0 &&
+           g_mob.inw_bx[s] == cx && g_mob.inw_by[s] == cy && g_mob.inw_bz[s] == cz {
+            g_mob.inw_last_seen[s] = tick;
+            g_mob.cand_pin[i] = 1;
+        } else {
+            g_mob.cand_pin[i] = 0;
+            l0_unpinned = l0_unpinned + 1;
+        }
+        i = i + 1;
+    }
 
+    var l0_active: i32 = 0;
     var s: i32 = 0;
     while s < MAX_INWARD_GL {
-        if s < cand_cnt {
-            let cx = g_mob.cand_x[s];
-            let cy = g_mob.cand_y[s];
-            let cz = g_mob.cand_z[s];
-            let blk = get_block(cx, cy, cz);
-            let cseed = resolve_child_frame_seed(pseed, pdepth, cx, cy, cz, blk);
-            if g_mob.inw_valid[s] == 0 ||
-               g_mob.inw_bx[s] != cx || g_mob.inw_by[s] != cy || g_mob.inw_bz[s] != cz ||
-               g_mob.inw_blk[s] != blk || g_mob.inw_seed[s] != cseed {
-                let cbio = resolve_child_frame_biome(pseed, pdepth, pbio, cx, cy, cz, blk, -1);
-                let cslot = resolve_subchunk_slot(pseed, pdepth, pbio, cx, cy, cz, blk);
-                let c_off = cslot * CHUNK_VOL;
-                var q: i32 = 0;
-                while q < 1024 {
-                    let base = c_off + q * 4;
-                    let b0 = st.inward_blocks[base + 0] as! i32;
-                    let b1 = st.inward_blocks[base + 1] as! i32;
-                    let b2 = st.inward_blocks[base + 2] as! i32;
-                    let b3 = st.inward_blocks[base + 3] as! i32;
-                    let packed = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-                    fbw_gl_push_inward_quad(s, q, packed);
-                    q = q + 1;
-                }
-                fbw_gl_set_inward_meta(s, 1, cx, cy, cz, cbio);
-                g_mob.inw_valid[s] = 1;
-                g_mob.inw_bx[s] = cx;
-                g_mob.inw_by[s] = cy;
-                g_mob.inw_bz[s] = cz;
-                g_mob.inw_blk[s] = blk;
-                g_mob.inw_seed[s] = cseed;
-                any_dirty = 1;
-            }
-        } else {
-            if g_mob.inw_valid[s] != 0 {
-                fbw_gl_set_inward_meta(s, 0, 0, 0, 0, 0);
-                g_mob.inw_valid[s] = 0;
-                any_dirty = 1;
-            }
-        }
+        if g_mob.inw_valid[s] != 0 { l0_active = l0_active + 1; }
         s = s + 1;
     }
 
-    let l1_seed = st.parent_seed[0];
-    let l1_depth = st.parent_depth[0];
-    let l1_bio = st.parent_biome[0];
+    let budget_l0 = if was_forced { 14 } else { 10 };
+    var up_l0: i32 = 0;
+    while up_l0 < budget_l0 && l0_unpinned > 0 {
+        var best_i: i32 = -1;
+        var best_sc: f64 = 1.0e18;
+        i = 0;
+        while i < cand_cnt {
+            if g_mob.cand_pin[i] == 0 && g_mob.cand_sc[i] < best_sc {
+                best_sc = g_mob.cand_sc[i];
+                best_i = i;
+            }
+            i = i + 1;
+        }
+        if best_i < 0 { break; }
+
+        var dst: i32 = -1;
+        if l0_active < l0_cap {
+            s = 0;
+            while s < MAX_INWARD_GL {
+                if g_mob.inw_valid[s] == 0 { dst = s; break; }
+                s = s + 1;
+            }
+        }
+        if dst < 0 {
+            var oldest_t: i32 = tick;
+            s = 0;
+            while s < MAX_INWARD_GL {
+                if g_mob.inw_valid[s] != 0 && g_mob.inw_last_seen[s] < oldest_t {
+                    oldest_t = g_mob.inw_last_seen[s];
+                    dst = s;
+                }
+                s = s + 1;
+            }
+        }
+        if dst < 0 { break; }
+
+        if g_mob.inw_valid[dst] != 0 {
+            let old_idx = (g_mob.inw_by[dst] << 8) | (g_mob.inw_bz[dst] << 4) | g_mob.inw_bx[dst];
+            if g_mob.l0_slot_grid[old_idx] == dst { g_mob.l0_slot_grid[old_idx] = -1; }
+        } else {
+            l0_active = l0_active + 1;
+        }
+
+        let cx = g_mob.cand_x[best_i];
+        let cy = g_mob.cand_y[best_i];
+        let cz = g_mob.cand_z[best_i];
+        let blk = get_block(cx, cy, cz);
+        let cseed = resolve_child_frame_seed(pseed, pdepth, cx, cy, cz, blk);
+        let cbio = resolve_child_frame_biome(pseed, pdepth, pbio, cx, cy, cz, blk, -1);
+        let cslot = resolve_subchunk_slot(pseed, pdepth, pbio, cx, cy, cz, blk);
+        let c_off = cslot * CHUNK_VOL;
+        var q: i32 = 0;
+        while q < 1024 {
+            let base = c_off + q * 4;
+            let b0 = st.inward_blocks[base + 0] as! i32;
+            let b1 = st.inward_blocks[base + 1] as! i32;
+            let b2 = st.inward_blocks[base + 2] as! i32;
+            let b3 = st.inward_blocks[base + 3] as! i32;
+            let packed = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            fbw_gl_push_inward_quad(dst, q, packed);
+            q = q + 1;
+        }
+        fbw_gl_set_inward_meta(dst, 1, cx, cy, cz, cbio);
+        let new_idx = (cy << 8) | (cz << 4) | cx;
+        g_mob.l0_slot_grid[new_idx] = dst;
+        g_mob.inw_valid[dst] = 1;
+        g_mob.inw_bx[dst] = cx;
+        g_mob.inw_by[dst] = cy;
+        g_mob.inw_bz[dst] = cz;
+        g_mob.inw_blk[dst] = blk;
+        g_mob.inw_seed[dst] = cseed;
+        g_mob.inw_last_seen[dst] = tick;
+        g_mob.cand_pin[best_i] = 1;
+        l0_unpinned = l0_unpinned - 1;
+        up_l0 = up_l0 + 1;
+        any_dirty = 1;
+    }
+
+    // Prune off-screen excess slots if l0_cap shrank (e.g. LOD OPT toggled back ON or slider lowered)
+    while l0_active > l0_cap {
+        var oldest_s: i32 = -1;
+        var oldest_t: i32 = tick;
+        s = 0;
+        while s < MAX_INWARD_GL {
+            if g_mob.inw_valid[s] != 0 && g_mob.inw_last_seen[s] < oldest_t {
+                oldest_t = g_mob.inw_last_seen[s];
+                oldest_s = s;
+            }
+            s = s + 1;
+        }
+        if oldest_s < 0 { break; }
+        let old_idx = (g_mob.inw_by[oldest_s] << 8) | (g_mob.inw_bz[oldest_s] << 4) | g_mob.inw_bx[oldest_s];
+        if g_mob.l0_slot_grid[old_idx] == oldest_s { g_mob.l0_slot_grid[old_idx] = -1; }
+        g_mob.inw_valid[oldest_s] = 0;
+        fbw_gl_set_inward_meta(oldest_s, 0, 0, 0, 0, 0);
+        l0_active = l0_active - 1;
+        any_dirty = 1;
+    }
+
+    // 4. Sticky Cache Match & Per-Frame Upload Budget for Layer 1
+    var l1_unpinned: i32 = 0;
+    i = 0;
+    while i < l1_cand_cnt {
+        let cx = g_mob.l1_cand_x[i];
+        let cy = g_mob.l1_cand_y[i];
+        let cz = g_mob.l1_cand_z[i];
+        let idx = (cy << 8) | (cz << 4) | cx;
+        let s1 = g_mob.l1_slot_grid[idx];
+        if s1 >= 0 && s1 < MAX_L1_INWARD_GL && g_mob.l1_inw_valid[s1] != 0 &&
+           g_mob.l1_inw_bx[s1] == cx && g_mob.l1_inw_by[s1] == cy && g_mob.l1_inw_bz[s1] == cz {
+            g_mob.l1_inw_last_seen[s1] = tick;
+            g_mob.l1_cand_pin[i] = 1;
+        } else {
+            g_mob.l1_cand_pin[i] = 0;
+            l1_unpinned = l1_unpinned + 1;
+        }
+        i = i + 1;
+    }
+
+    var l1_active: i32 = 0;
     s = 0;
     while s < MAX_L1_INWARD_GL {
-        if s < l1_cand_cnt {
-            let cx = g_mob.l1_cand_x[s];
-            let cy = g_mob.l1_cand_y[s];
-            let cz = g_mob.l1_cand_z[s];
-            let blk = l1_blk_at(cx, cy, cz);
-            let cseed = resolve_child_frame_seed(l1_seed, l1_depth, cx, cy, cz, blk);
-            if g_mob.l1_inw_valid[s] == 0 ||
-               g_mob.l1_inw_bx[s] != cx || g_mob.l1_inw_by[s] != cy || g_mob.l1_inw_bz[s] != cz ||
-               g_mob.l1_inw_blk[s] != blk || g_mob.l1_inw_seed[s] != cseed {
-                let cbio = resolve_child_frame_biome(l1_seed, l1_depth, l1_bio, cx, cy, cz, blk, -1);
-                let cslot = resolve_subchunk_slot(l1_seed, l1_depth, l1_bio, cx, cy, cz, blk);
-                let c_off = cslot * CHUNK_VOL;
-                var q: i32 = 0;
-                while q < 1024 {
-                    let base = c_off + q * 4;
-                    let b0 = st.inward_blocks[base + 0] as! i32;
-                    let b1 = st.inward_blocks[base + 1] as! i32;
-                    let b2 = st.inward_blocks[base + 2] as! i32;
-                    let b3 = st.inward_blocks[base + 3] as! i32;
-                    let packed = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-                    fbw_gl_push_l1_inward_quad(s, q, packed);
-                    q = q + 1;
-                }
-                fbw_gl_set_l1_inward_meta(s, 1, cx, cy, cz, cbio);
-                g_mob.l1_inw_valid[s] = 1;
-                g_mob.l1_inw_bx[s] = cx;
-                g_mob.l1_inw_by[s] = cy;
-                g_mob.l1_inw_bz[s] = cz;
-                g_mob.l1_inw_blk[s] = blk;
-                g_mob.l1_inw_seed[s] = cseed;
-                any_dirty = 1;
-            }
-        } else {
-            if g_mob.l1_inw_valid[s] != 0 {
-                fbw_gl_set_l1_inward_meta(s, 0, 0, 0, 0, 0);
-                g_mob.l1_inw_valid[s] = 0;
-                any_dirty = 1;
-            }
-        }
+        if g_mob.l1_inw_valid[s] != 0 { l1_active = l1_active + 1; }
         s = s + 1;
     }
 
+    let budget_l1 = if was_forced { 6 } else { 4 };
+    var up_l1: i32 = 0;
+    while up_l1 < budget_l1 && l1_unpinned > 0 {
+        var best_i: i32 = -1;
+        var best_sc: f64 = 1.0e18;
+        i = 0;
+        while i < l1_cand_cnt {
+            if g_mob.l1_cand_pin[i] == 0 && g_mob.l1_cand_sc[i] < best_sc {
+                best_sc = g_mob.l1_cand_sc[i];
+                best_i = i;
+            }
+            i = i + 1;
+        }
+        if best_i < 0 { break; }
+
+        var dst: i32 = -1;
+        if l1_active < l1_cap {
+            s = 0;
+            while s < MAX_L1_INWARD_GL {
+                if g_mob.l1_inw_valid[s] == 0 { dst = s; break; }
+                s = s + 1;
+            }
+        }
+        if dst < 0 {
+            var oldest_t: i32 = tick;
+            s = 0;
+            while s < MAX_L1_INWARD_GL {
+                if g_mob.l1_inw_valid[s] != 0 && g_mob.l1_inw_last_seen[s] < oldest_t {
+                    oldest_t = g_mob.l1_inw_last_seen[s];
+                    dst = s;
+                }
+                s = s + 1;
+            }
+        }
+        if dst < 0 { break; }
+
+        if g_mob.l1_inw_valid[dst] != 0 {
+            let old_idx = (g_mob.l1_inw_by[dst] << 8) | (g_mob.l1_inw_bz[dst] << 4) | g_mob.l1_inw_bx[dst];
+            if g_mob.l1_slot_grid[old_idx] == dst { g_mob.l1_slot_grid[old_idx] = -1; }
+        } else {
+            l1_active = l1_active + 1;
+        }
+
+        let cx = g_mob.l1_cand_x[best_i];
+        let cy = g_mob.l1_cand_y[best_i];
+        let cz = g_mob.l1_cand_z[best_i];
+        let blk = l1_blk_at(cx, cy, cz);
+        let cseed = resolve_child_frame_seed(l1_seed, l1_depth, cx, cy, cz, blk);
+        let cbio = resolve_child_frame_biome(l1_seed, l1_depth, l1_bio, cx, cy, cz, blk, -1);
+        let cslot = resolve_subchunk_slot(l1_seed, l1_depth, l1_bio, cx, cy, cz, blk);
+        let c_off = cslot * CHUNK_VOL;
+        var q: i32 = 0;
+        while q < 1024 {
+            let base = c_off + q * 4;
+            let b0 = st.inward_blocks[base + 0] as! i32;
+            let b1 = st.inward_blocks[base + 1] as! i32;
+            let b2 = st.inward_blocks[base + 2] as! i32;
+            let b3 = st.inward_blocks[base + 3] as! i32;
+            let packed = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            fbw_gl_push_l1_inward_quad(dst, q, packed);
+            q = q + 1;
+        }
+        fbw_gl_set_l1_inward_meta(dst, 1, cx, cy, cz, cbio);
+        let new_idx = (cy << 8) | (cz << 4) | cx;
+        g_mob.l1_slot_grid[new_idx] = dst;
+        g_mob.l1_inw_valid[dst] = 1;
+        g_mob.l1_inw_bx[dst] = cx;
+        g_mob.l1_inw_by[dst] = cy;
+        g_mob.l1_inw_bz[dst] = cz;
+        g_mob.l1_inw_blk[dst] = blk;
+        g_mob.l1_inw_seed[dst] = cseed;
+        g_mob.l1_inw_last_seen[dst] = tick;
+        g_mob.l1_cand_pin[best_i] = 1;
+        l1_unpinned = l1_unpinned - 1;
+        up_l1 = up_l1 + 1;
+        any_dirty = 1;
+    }
+
+    while l1_active > l1_cap {
+        var oldest_s: i32 = -1;
+        var oldest_t: i32 = tick;
+        s = 0;
+        while s < MAX_L1_INWARD_GL {
+            if g_mob.l1_inw_valid[s] != 0 && g_mob.l1_inw_last_seen[s] < oldest_t {
+                oldest_t = g_mob.l1_inw_last_seen[s];
+                oldest_s = s;
+            }
+            s = s + 1;
+        }
+        if oldest_s < 0 { break; }
+        let old_idx = (g_mob.l1_inw_by[oldest_s] << 8) | (g_mob.l1_inw_bz[oldest_s] << 4) | g_mob.l1_inw_bx[oldest_s];
+        if g_mob.l1_slot_grid[old_idx] == oldest_s { g_mob.l1_slot_grid[old_idx] = -1; }
+        g_mob.l1_inw_valid[oldest_s] = 0;
+        fbw_gl_set_l1_inward_meta(oldest_s, 0, 0, 0, 0, 0);
+        l1_active = l1_active - 1;
+        any_dirty = 1;
+    }
+
+    g_mob.inw_pending = if l0_unpinned > 0 || l1_unpinned > 0 { 1 } else { 0 };
     if any_dirty != 0 {
         fbw_gl_mark_inward_dirty();
     }
@@ -815,7 +1060,11 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
         g_mob.sync_force = 1;
     }
 
+    if st.lod_dist_level < 1 || st.lod_dist_level > 7 {
+        st.lod_dist_level = 4;
+    }
     // 1. Hardware OpenGL Pass (Sky + 5 Macro Parents + Layer 0 + Inward 1/16x LOD + Dynamic)
+    fbw_gl_set_lod_config(st.disable_lod, st.lod_dist_level);
     sync_chunks_to_gl();
     sync_inward_to_gl();
     sync_dynamic_to_gl();
@@ -1177,13 +1426,34 @@ fn draw_mobile_modal(w: i32, h: i32) {
         draw_modal_row(mx, my + mh - 60, mw, "CLOSE GUIDE", 0x334155FF, 0xFFFFFFFF);
     } else {
         set_color(0x38BDF8FF);
-        fbw_text(mx + 22, my + 16, "FRACTAL BLOCK WORLD - PAUSED", 3);
-        draw_modal_row_h(mx, my + 54,  mw, 42, "RESUME GAME", 0x065F46FF, 0xFFFFFFFF);
-        draw_modal_row_h(mx, my + 100, mw, 42, if st.genesis_mode != 0 { "MODE: GENESIS (TAP FOR CLASSIC)" } else { "MODE: CLASSIC (TAP FOR GENESIS)" }, 0x1E3A8AFF, 0xFACC15FF);
-        draw_modal_row_h(mx, my + 146, mw, 42, if st.shrink_any != 0 { "SHRINK ANY: ON (TAP TO TOGGLE)" } else { "SHRINK ANY: OFF (TAP TO TOGGLE)" }, 0x312E81FF, 0xFFFFFFFF);
-        draw_modal_row_h(mx, my + 192, mw, 42, if st.disable_lod != 0 { "LOD OPT: OFF (ON-SCREEN FULL)" } else { "LOD OPT: ON (OPTIMIZED)" }, 0x0F766EFF, if st.disable_lod != 0 { 0x4ADE80FF } else { 0xFFFFFFFF });
-        draw_modal_row_h(mx, my + 238, mw, 42, "RESTART NEW RUN", 0x7C2D12FF, 0xFFFFFFFF);
-        draw_modal_row_h(mx, my + 284, mw, 42, "EXIT TO GOOSECALC", 0x7F1D1DFF, 0xFFFFFFFF);
+        fbw_text(mx + 22, my + 14, "FRACTAL BLOCK WORLD - PAUSED", 3);
+        draw_modal_row_h(mx, my + 46,  mw, 36, "RESUME GAME", 0x065F46FF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 86,  mw, 36, if st.genesis_mode != 0 { "MODE: GENESIS (TAP FOR CLASSIC)" } else { "MODE: CLASSIC (TAP FOR GENESIS)" }, 0x1E3A8AFF, 0xFACC15FF);
+        draw_modal_row_h(mx, my + 126, mw, 36, if st.shrink_any != 0 { "SHRINK ANY: ON (TAP TO TOGGLE)" } else { "SHRINK ANY: OFF (TAP TO TOGGLE)" }, 0x312E81FF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 166, mw, 36, if st.disable_lod != 0 { "LOD OPT: OFF (ON-SCREEN FULL)" } else { "LOD OPT: ON (3-TIER 16/8/4X)" }, 0x0F766EFF, if st.disable_lod != 0 { 0x4ADE80FF } else { 0xFFFFFFFF });
+        // Interactive LOD Distance Slider Bar (1..7)
+        let sy = my + 206;
+        fbw_box(mx + 18, sy, mx + mw - 18, sy + 36, 0x0F172AFF, 0x38BDF8FF);
+        var lb: u8[160] = [0; 160];
+        var ll: i32 = 0;
+        let lv = clamp_i(st.lod_dist_level, 1, 7);
+        buf_str(lb, ll, "LOD DIST: ");
+        buf_int(lb, ll, lv);
+        buf_str(lb, ll, "/7");
+        lb[ll] = 0;
+        set_color(0xFFFFFFFF);
+        fbw_text(mx + 30, sy + 10, lb[0..ll], 2);
+        let tx1 = mx + (mw * 42) / 100;
+        let tx2 = mx + mw - 30;
+        let tw = tx2 - tx1;
+        fbw_box(tx1, sy + 11, tx2, sy + 25, 0x1E293BFF, 0x475569FF);
+        let fx2 = tx1 + (tw * lv) / 7;
+        set_color(if st.disable_lod != 0 { 0x64748BFF } else { 0x38BDF8FF });
+        draw_rect(tx1 + 2, sy + 13, fx2 - 2, sy + 23);
+        let kx = tx1 + (tw * (2 * lv - 1)) / 14;
+        fbw_box(kx - 5, sy + 7, kx + 5, sy + 29, 0xFACC15FF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 246, mw, 36, "RESTART NEW RUN", 0x7C2D12FF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 286, mw, 36, "EXIT TO GOOSECALC", 0x7F1D1DFF, 0xFFFFFFFF);
     }
 }
 
@@ -1264,33 +1534,50 @@ fn handle_modal_tap(x: i32, y: i32) {
         if y >= my + 200 && y <= my + 246 { init_new_game(); st.screen = SCREEN_PLAY; g_mob.sync_force = 1; return; }
         if y >= my + 260 && y <= my + 306 { g_mob.want_exit_to_calc = 1; return; }
     } else if st.screen == SCREEN_PAUSE {
-        if y >= my + 54 && y <= my + 96 { st.screen = SCREEN_PLAY; return; }
-        if y >= my + 100 && y <= my + 142 {
+        if y >= my + 46 && y <= my + 82 { st.screen = SCREEN_PLAY; return; }
+        if y >= my + 86 && y <= my + 122 {
             st.genesis_mode = if st.genesis_mode != 0 { 0 } else { 1 };
             init_new_game();
             st.screen = SCREEN_PLAY;
             g_mob.sync_force = 1;
             return;
         }
-        if y >= my + 146 && y <= my + 188 {
+        if y >= my + 126 && y <= my + 162 {
             st.shrink_any = if st.shrink_any != 0 { 0 } else { 1 };
             st.screen = SCREEN_PLAY;
             return;
         }
-        if y >= my + 192 && y <= my + 234 {
+        if y >= my + 166 && y <= my + 202 {
             st.disable_lod = if st.disable_lod != 0 { 0 } else { 1 };
             g_mob.inw_force = 1;
-            set_status_msg(if st.disable_lod != 0 { "LOD Opt OFF: Full On-Screen Detail" } else { "LOD Opt ON: Optimized" }, 1400);
+            fbw_gl_set_lod_config(st.disable_lod, st.lod_dist_level);
+            set_status_msg(if st.disable_lod != 0 { "LOD Opt OFF: Full On-Screen Detail" } else { "LOD Opt ON: 3-Tier Volumetric" }, 1400);
             st.screen = SCREEN_PLAY;
             return;
         }
-        if y >= my + 238 && y <= my + 280 {
+        if y >= my + 206 && y <= my + 242 {
+            let tx1 = mx + (mw * 42) / 100;
+            let tx2 = mx + mw - 30;
+            let tw = tx2 - tx1;
+            var lv = st.lod_dist_level;
+            if x >= tx1 - 10 && tw > 0 {
+                lv = clamp_i(1 + ((x - tx1) * 7) / tw, 1, 7);
+            } else {
+                lv = (clamp_i(lv, 1, 7) % 7) + 1;
+            }
+            st.lod_dist_level = lv;
+            g_mob.inw_force = 1;
+            fbw_gl_set_lod_config(st.disable_lod, st.lod_dist_level);
+            fbw_sound_fx(0);
+            return;
+        }
+        if y >= my + 246 && y <= my + 282 {
             init_new_game();
             st.screen = SCREEN_PLAY;
             g_mob.sync_force = 1;
             return;
         }
-        if y >= my + 284 && y <= my + 326 {
+        if y >= my + 286 && y <= my + 322 {
             g_mob.want_exit_to_calc = 1;
             return;
         }
@@ -1385,6 +1672,10 @@ fn fbw_mobile_pointer(x: i32, y: i32, pid_in: i32, ev_type: i32) {
 
     if ev_type == PTR_DOWN {
         if st.screen != SCREEN_PLAY {
+            g_mob.ptrs[pid].active = 1;
+            g_mob.ptrs[pid].role = ACT_NONE;
+            g_mob.ptrs[pid].cur_x = x;
+            g_mob.ptrs[pid].cur_y = y;
             handle_modal_tap(x, y);
             return;
         }
@@ -1470,7 +1761,23 @@ fn fbw_mobile_pointer(x: i32, y: i32, pid_in: i32, ev_type: i32) {
         g_mob.ptrs[pid].last_y = y;
         g_mob.ptrs[pid].cur_x = x;
         g_mob.ptrs[pid].cur_y = y;
-        if g_mob.ptrs[pid].role == ACT_LOOK && st.screen == SCREEN_PLAY {
+        if st.screen == SCREEN_PAUSE {
+            let mw = clamp_i((l.w * 74) / 100, 440, 780);
+            let mh = clamp_i((l.h * 80) / 100, 340, 580);
+            let mx = (l.w - mw) / 2;
+            let my = (l.h - mh) / 2;
+            let tx1 = mx + (mw * 42) / 100;
+            let tx2 = mx + mw - 30;
+            let tw = tx2 - tx1;
+            if y >= my + 206 && y <= my + 242 && x >= tx1 - 10 && x <= tx2 + 10 && tw > 0 {
+                let lv = clamp_i(1 + ((x - tx1) * 7) / tw, 1, 7);
+                if lv != st.lod_dist_level {
+                    st.lod_dist_level = lv;
+                    g_mob.inw_force = 1;
+                    fbw_gl_set_lod_config(st.disable_lod, st.lod_dist_level);
+                }
+            }
+        } else if g_mob.ptrs[pid].role == ACT_LOOK && st.screen == SCREEN_PLAY {
             st.yaw = wrap_angle(st.yaw + (dx as f64) * 0.0042);
             st.pitch = fclamp(st.pitch - (dy as f64) * 0.0042, -1.35, 1.35);
             st.turning_ms = 120;

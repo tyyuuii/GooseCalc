@@ -23,6 +23,7 @@ void fbw_gl_set_inward_meta(int slot, int valid, int bx, int by, int bz, int bio
 void fbw_gl_push_inward_quad(int slot, int qidx, int packed4);
 void fbw_gl_set_l1_inward_meta(int slot, int valid, int bx, int by, int bz, int biome);
 void fbw_gl_push_l1_inward_quad(int slot, int qidx, int packed4);
+void fbw_gl_set_lod_config(int disable_lod, int lod_dist_level);
 void fbw_gl_mark_inward_dirty(void);
 
 // Dynamic per-frame geometry
