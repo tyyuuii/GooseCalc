@@ -225,6 +225,7 @@ root struct fbw_state {
     modal_bg_ready: i32,
     genesis_mode: i32, // 1 = Peaceful Genesis Mode (no monsters)
     shrink_any: i32,   // 1 = Shrink into ANY touched block (Xar 'shrinkany')
+    disable_lod: i32,  // 1 = Disable LOD optimization (load all on-screen interiors across all scales)
 
     // Unbounded recursive 16x16x16 world stack (-128..3000)
     blocks: u8[CHUNK_VOL],
@@ -3544,6 +3545,7 @@ fn handle_black_market_action(choice: i32) {
 
 fn step_simulation(dt_ms: i32) {
     if st.screen != SCREEN_PLAY { return; }
+    st.anim_ms = st.anim_ms + dt_ms;
     let dt = (dt_ms as f64) / 1000.0;
 
     if st.fire_cd_ms > 0 { st.fire_cd_ms = st.fire_cd_ms - dt_ms; if st.fire_cd_ms < 0 { st.fire_cd_ms = 0; } }

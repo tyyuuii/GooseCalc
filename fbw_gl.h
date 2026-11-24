@@ -18,9 +18,11 @@ void fbw_gl_set_parent_meta(int layer, int valid, int bx, int by, int bz, int bi
 void fbw_gl_push_chunk_quad(int layer, int qidx, int packed4);
 void fbw_gl_mark_chunks_dirty(void);
 
-// Inward LOD sub-chunk synchronization (1/16x nested blocks inside Layer 0)
+// Inward LOD sub-chunk synchronization (1/16x nested blocks inside Layer 0, and 1x inside Layer 1)
 void fbw_gl_set_inward_meta(int slot, int valid, int bx, int by, int bz, int biome);
 void fbw_gl_push_inward_quad(int slot, int qidx, int packed4);
+void fbw_gl_set_l1_inward_meta(int slot, int valid, int bx, int by, int bz, int biome);
+void fbw_gl_push_l1_inward_quad(int slot, int qidx, int packed4);
 void fbw_gl_mark_inward_dirty(void);
 
 // Dynamic per-frame geometry

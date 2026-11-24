@@ -18,6 +18,8 @@ extern fn fbw_gl_mark_chunks_dirty();
 
 extern fn fbw_gl_set_inward_meta(slot: i32, valid: i32, bx: i32, by: i32, bz: i32, biome: i32);
 extern fn fbw_gl_push_inward_quad(slot: i32, qidx: i32, packed4: i32);
+extern fn fbw_gl_set_l1_inward_meta(slot: i32, valid: i32, bx: i32, by: i32, bz: i32, biome: i32);
+extern fn fbw_gl_push_l1_inward_quad(slot: i32, qidx: i32, packed4: i32);
 extern fn fbw_gl_mark_inward_dirty();
 
 extern fn fbw_gl_clear_dynamic();

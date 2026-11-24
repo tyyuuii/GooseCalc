@@ -80,8 +80,10 @@
 #define CHUNK_VOL         4096
 #define MAX_LAYERS        6
 #define MAX_PARENTS       5
-#define MAX_INWARD_SLOTS  16
-#define MAX_BAND1_VERTS   262144
+#define MAX_INWARD_SLOTS    256
+#define MAX_L1_INWARD_SLOTS 64
+#define MAX_BAND1_INIT      131072
+#define MAX_BAND1_HARD_CAP  4194304
 #define MAX_BAND2_VERTS   65536
 #define MAX_BAND3_VERTS   65536
 #define MAX_DYN_VERTS     32768
@@ -123,6 +125,13 @@ static int g_inward_by[MAX_INWARD_SLOTS];
 static int g_inward_bz[MAX_INWARD_SLOTS];
 static int g_inward_biome[MAX_INWARD_SLOTS];
 static int g_inward_grid[CHUNK_VOL]; // -1 or slot index for O(1) lookup during Layer 0 meshing
+static uint8_t g_l1_inward[MAX_L1_INWARD_SLOTS][CHUNK_VOL];
+static int g_l1_inward_valid[MAX_L1_INWARD_SLOTS];
+static int g_l1_inward_bx[MAX_L1_INWARD_SLOTS];
+static int g_l1_inward_by[MAX_L1_INWARD_SLOTS];
+static int g_l1_inward_bz[MAX_L1_INWARD_SLOTS];
+static int g_l1_inward_biome[MAX_L1_INWARD_SLOTS];
+static int g_l1_inward_grid[CHUNK_VOL]; // -1 or slot index for Layer 1 (16x -> 1x) meshing
 static int g_inward_dirty = 1;
 
 static int g_vp_w = 1280, g_vp_h = 720;
@@ -142,7 +151,8 @@ static int g_beam_active = 0;
 static float g_beam_x1, g_beam_y1, g_beam_z1, g_beam_x2, g_beam_y2, g_beam_z2;
 static uint32_t g_beam_rgb = 0;
 
-static FbwVert g_band1_verts[MAX_BAND1_VERTS];
+static FbwVert *g_band1_verts = NULL;
+static int g_band1_cap = 0;
 static int g_band1_cnt = 0;
 static FbwVert g_band2_verts[MAX_BAND2_VERTS];
 static int g_band2_cnt = 0;
@@ -447,14 +457,32 @@ static void block_color(uint8_t blk, uint8_t *r, uint8_t *g, uint8_t *b, float *
     }
 }
 
-static void push_quad_ao(FbwVert *buf, int *cnt, int max_v,
-                         float x0, float y0, float z0,
-                         float x1, float y1, float z1,
-                         float x2, float y2, float z2,
-                         float x3, float y3, float z3,
-                         float l0, float l1, float l2, float l3,
-                         float style, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-    if (*cnt + 6 > max_v) return;
+static int ensure_vert_cap(FbwVert **pbuf, int *cap, int need, int allow_grow) {
+    if (need <= *cap && *pbuf != NULL) return 1;
+    if (!allow_grow) return 0;
+    int new_cap = (*cap > 0) ? *cap : MAX_BAND1_INIT;
+    while (new_cap < need) {
+        if (new_cap >= MAX_BAND1_HARD_CAP) return 0;
+        new_cap *= 2;
+    }
+    if (new_cap > MAX_BAND1_HARD_CAP) new_cap = MAX_BAND1_HARD_CAP;
+    if (need > new_cap) return 0;
+    FbwVert *nb = (FbwVert *)realloc(*pbuf, (size_t)new_cap * sizeof(FbwVert));
+    if (!nb) return 0;
+    *pbuf = nb;
+    *cap = new_cap;
+    return 1;
+}
+
+static void push_quad_ao_dyn(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
+                             float x0, float y0, float z0,
+                             float x1, float y1, float z1,
+                             float x2, float y2, float z2,
+                             float x3, float y3, float z3,
+                             float l0, float l1, float l2, float l3,
+                             float style, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    if (!ensure_vert_cap(pbuf, max_v, *cnt + 6, allow_grow)) return;
+    FbwVert *buf = *pbuf;
     FbwVert v0 = { x0, y0, z0, 0.f, 0.f, l0, style, r, g, b, a };
     FbwVert v1 = { x1, y1, z1, 1.f, 0.f, l1, style, r, g, b, a };
     FbwVert v2 = { x2, y2, z2, 1.f, 1.f, l2, style, r, g, b, a };
@@ -474,6 +502,29 @@ static void push_quad_ao(FbwVert *buf, int *cnt, int max_v,
         buf[(*cnt)++] = v3;
         buf[(*cnt)++] = v0;
     }
+}
+
+static void push_quad_ao(FbwVert *buf, int *cnt, int max_v,
+                         float x0, float y0, float z0,
+                         float x1, float y1, float z1,
+                         float x2, float y2, float z2,
+                         float x3, float y3, float z3,
+                         float l0, float l1, float l2, float l3,
+                         float style, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    push_quad_ao_dyn(&buf, cnt, &max_v, 0,
+                     x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3,
+                     l0, l1, l2, l3, style, r, g, b, a);
+}
+
+static void push_quad_dyn(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
+                          float x0, float y0, float z0,
+                          float x1, float y1, float z1,
+                          float x2, float y2, float z2,
+                          float x3, float y3, float z3,
+                          float light, float style, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow,
+                     x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3,
+                     light, light, light, light, style, r, g, b, a);
 }
 
 static void push_quad(FbwVert *buf, int *cnt, int max_v,
@@ -514,9 +565,12 @@ static inline float corner_ao(int s1, int s2, int c) {
     return 0.64f + 0.12f * (float)lv;
 }
 
-static inline int inward_occ(int slot, int lx, int ly, int lz, int ix, int iy, int iz) {
+static inline int inward_occ(int layer, int slot, int lx, int ly, int lz,
+                             int ix, int iy, int iz,
+                             int hole_x, int hole_y, int hole_z, int skip_hole) {
     if (ix >= 0 && ix < 16 && iy >= 0 && iy < 16 && iz >= 0 && iz < 16) {
-        return g_inward[slot][(iy << 8) | (iz << 4) | ix] != BLK_AIR ? 1 : 0;
+        const uint8_t *arr = (layer == 0) ? g_inward[slot] : g_l1_inward[slot];
+        return arr[(iy << 8) | (iz << 4) | ix] != BLK_AIR ? 1 : 0;
     }
     int nx = lx + (ix < 0 ? -1 : (ix >= 16 ? 1 : 0));
     int ny = ly + (iy < 0 ? -1 : (iy >= 16 ? 1 : 0));
@@ -524,10 +578,14 @@ static inline int inward_occ(int slot, int lx, int ly, int lz, int ix, int iy, i
     if (nx < 0 || nx >= 16 || ny < 0 || ny >= 16 || nz < 0 || nz >= 16) {
         return 0;
     }
-    uint8_t nb = chunk_at(0, nx, ny, nz);
+    if (skip_hole && nx == hole_x && ny == hole_y && nz == hole_z) {
+        return 0;
+    }
+    uint8_t nb = chunk_at(layer, nx, ny, nz);
     if (nb == BLK_AIR) return 0;
+    const int *grid = (layer == 0) ? g_inward_grid : g_l1_inward_grid;
     // If neighbor also has an active inward slot, keep portal skin open
-    if (g_inward_grid[(ny << 8) | (nz << 4) | nx] >= 0) return 0;
+    if (grid[(ny << 8) | (nz << 4) | nx] >= 0) return 0;
     return 1;
 }
 
@@ -541,76 +599,81 @@ static void apply_depth_tint(uint8_t *r, uint8_t *g, uint8_t *b) {
     }
 }
 
-static void mesh_inward_slot(int slot, int lx, int ly, int lz, FbwVert *buf, int *cnt, int max_v) {
-    const float sc = 0.0625f; // 1/16
-    const float ox = (float)lx;
-    const float oy = (float)ly;
-    const float oz = (float)lz;
+static void mesh_inward_slot(int layer, int slot, int lx, int ly, int lz,
+                             float parent_scale, float px_off, float py_off, float pz_off,
+                             int hole_x, int hole_y, int hole_z, int skip_hole,
+                             float sub_tier_offset,
+                             FbwVert **pbuf, int *cnt, int *max_v, int allow_grow) {
+    const float sc = parent_scale * 0.0625f;
+    const float ox = px_off + (float)lx * parent_scale;
+    const float oy = py_off + (float)ly * parent_scale;
+    const float oz = pz_off + (float)lz * parent_scale;
+    const uint8_t *arr = (layer == 0) ? g_inward[slot] : g_l1_inward[slot];
     int y, z, x;
     for (y = 0; y < CHUNK_DIM; y++) {
         for (z = 0; z < CHUNK_DIM; z++) {
             for (x = 0; x < CHUNK_DIM; x++) {
-                uint8_t blk = g_inward[slot][(y << 8) | (z << 4) | x];
+                uint8_t blk = arr[(y << 8) | (z << 4) | x];
                 if (blk == BLK_AIR) continue;
 
                 uint8_t r, g, b;
                 float style;
                 block_color(blk, &r, &g, &b, &style);
                 apply_depth_tint(&r, &g, &b);
-                style += 16.0f; // Tier 1 (sub-voxel LOD soften)
+                style += sub_tier_offset;
 
                 float wx0 = ox + (float)x * sc, wx1 = wx0 + sc;
                 float wy0 = oy + (float)y * sc, wy1 = wy0 + sc;
                 float wz0 = oz + (float)z * sc, wz1 = wz0 + sc;
 
                 // +Y
-                if (!inward_occ(slot, lx, ly, lz, x, y + 1, z)) {
-                    float a0 = corner_ao(inward_occ(slot, lx, ly, lz, x - 1, y + 1, z),
-                                         inward_occ(slot, lx, ly, lz, x, y + 1, z + 1),
-                                         inward_occ(slot, lx, ly, lz, x - 1, y + 1, z + 1));
-                    float a1 = corner_ao(inward_occ(slot, lx, ly, lz, x + 1, y + 1, z),
-                                         inward_occ(slot, lx, ly, lz, x, y + 1, z + 1),
-                                         inward_occ(slot, lx, ly, lz, x + 1, y + 1, z + 1));
-                    float a2 = corner_ao(inward_occ(slot, lx, ly, lz, x + 1, y + 1, z),
-                                         inward_occ(slot, lx, ly, lz, x, y + 1, z - 1),
-                                         inward_occ(slot, lx, ly, lz, x + 1, y + 1, z - 1));
-                    float a3 = corner_ao(inward_occ(slot, lx, ly, lz, x - 1, y + 1, z),
-                                         inward_occ(slot, lx, ly, lz, x, y + 1, z - 1),
-                                         inward_occ(slot, lx, ly, lz, x - 1, y + 1, z - 1));
-                    push_quad_ao(buf, cnt, max_v, wx0,wy1,wz1, wx1,wy1,wz1, wx1,wy1,wz0, wx0,wy1,wz0,
-                                 1.05f * a0, 1.05f * a1, 1.05f * a2, 1.05f * a3, style, r, g, b, 255);
+                if (!inward_occ(layer, slot, lx, ly, lz, x, y + 1, z, hole_x, hole_y, hole_z, skip_hole)) {
+                    float a0 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y + 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y + 1, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y + 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a1 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y + 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y + 1, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y + 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a2 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y + 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y + 1, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y + 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a3 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y + 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y + 1, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y + 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy1,wz1, wx1,wy1,wz1, wx1,wy1,wz0, wx0,wy1,wz0,
+                                     1.05f * a0, 1.05f * a1, 1.05f * a2, 1.05f * a3, style, r, g, b, 255);
                 }
                 // -Y
-                if (!inward_occ(slot, lx, ly, lz, x, y - 1, z)) {
-                    push_quad(buf, cnt, max_v, wx0,wy0,wz0, wx1,wy0,wz0, wx1,wy0,wz1, wx0,wy0,wz1,
-                              0.60f, style, r, g, b, 255);
+                if (!inward_occ(layer, slot, lx, ly, lz, x, y - 1, z, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx1,wy0,wz0, wx1,wy0,wz1, wx0,wy0,wz1,
+                                  0.60f, style, r, g, b, 255);
                 }
                 // +X
-                if (!inward_occ(slot, lx, ly, lz, x + 1, y, z)) {
-                    push_quad(buf, cnt, max_v, wx1,wy0,wz1, wx1,wy0,wz0, wx1,wy1,wz0, wx1,wy1,wz1,
-                              0.88f, style, r, g, b, 255);
+                if (!inward_occ(layer, slot, lx, ly, lz, x + 1, y, z, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz1, wx1,wy0,wz0, wx1,wy1,wz0, wx1,wy1,wz1,
+                                  0.88f, style, r, g, b, 255);
                 }
                 // -X
-                if (!inward_occ(slot, lx, ly, lz, x - 1, y, z)) {
-                    push_quad(buf, cnt, max_v, wx0,wy0,wz0, wx0,wy0,wz1, wx0,wy1,wz1, wx0,wy1,wz0,
-                              0.76f, style, r, g, b, 255);
+                if (!inward_occ(layer, slot, lx, ly, lz, x - 1, y, z, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx0,wy0,wz1, wx0,wy1,wz1, wx0,wy1,wz0,
+                                  0.76f, style, r, g, b, 255);
                 }
                 // +Z
-                if (!inward_occ(slot, lx, ly, lz, x, y, z + 1)) {
-                    push_quad(buf, cnt, max_v, wx0,wy0,wz1, wx1,wy0,wz1, wx1,wy1,wz1, wx0,wy1,wz1,
-                              0.95f, style, r, g, b, 255);
+                if (!inward_occ(layer, slot, lx, ly, lz, x, y, z + 1, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz1, wx1,wy0,wz1, wx1,wy1,wz1, wx0,wy1,wz1,
+                                  0.95f, style, r, g, b, 255);
                 }
                 // -Z
-                if (!inward_occ(slot, lx, ly, lz, x, y, z - 1)) {
-                    push_quad(buf, cnt, max_v, wx1,wy0,wz0, wx0,wy0,wz0, wx0,wy1,wz0, wx1,wy1,wz0,
-                              0.70f, style, r, g, b, 255);
+                if (!inward_occ(layer, slot, lx, ly, lz, x, y, z - 1, hole_x, hole_y, hole_z, skip_hole)) {
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz0, wx0,wy0,wz0, wx0,wy1,wz0, wx1,wy1,wz0,
+                                  0.70f, style, r, g, b, 255);
                 }
             }
         }
     }
 }
 
-static void mesh_layer_to(FbwVert *buf, int *cnt, int max_v,
+static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                           int layer, float scale, float ox, float oy, float oz,
                           int hole_x, int hole_y, int hole_z, int skip_hole,
                           float tier_offset, int use_inward) {
@@ -622,10 +685,14 @@ static void mesh_layer_to(FbwVert *buf, int *cnt, int max_v,
                 if (blk == BLK_AIR) continue;
                 if (skip_hole && x == hole_x && y == hole_y && z == hole_z) continue;
 
-                if (use_inward && layer == 0) {
-                    int slot = g_inward_grid[(y << 8) | (z << 4) | x];
+                if (use_inward && (layer == 0 || layer == 1)) {
+                    int slot = (layer == 0) ? g_inward_grid[(y << 8) | (z << 4) | x]
+                                            : g_l1_inward_grid[(y << 8) | (z << 4) | x];
                     if (slot >= 0) {
-                        mesh_inward_slot(slot, x, y, z, buf, cnt, max_v);
+                        float sub_tier = (layer == 0) ? 16.0f : 0.0f;
+                        mesh_inward_slot(layer, slot, x, y, z, scale, ox, oy, oz,
+                                         hole_x, hole_y, hole_z, skip_hole,
+                                         sub_tier, pbuf, cnt, max_v, allow_grow);
                         continue;
                     }
                 }
@@ -657,8 +724,8 @@ static void mesh_layer_to(FbwVert *buf, int *cnt, int max_v,
                     float a3 = corner_ao(chunk_occ(layer, x - 1, y + 1, z),
                                          chunk_occ(layer, x, y + 1, z - 1),
                                          chunk_occ(layer, x - 1, y + 1, z - 1));
-                    push_quad_ao(buf, cnt, max_v, wx0,wy1,wz1, wx1,wy1,wz1, wx1,wy1,wz0, wx0,wy1,wz0,
-                                 1.05f * a0, 1.05f * a1, 1.05f * a2, 1.05f * a3, style, r, g, b, 255);
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy1,wz1, wx1,wy1,wz1, wx1,wy1,wz0, wx0,wy1,wz0,
+                                     1.05f * a0, 1.05f * a1, 1.05f * a2, 1.05f * a3, style, r, g, b, 255);
                 }
                 // -Y
                 if (!chunk_occ(layer, x, y - 1, z)) {
@@ -674,8 +741,8 @@ static void mesh_layer_to(FbwVert *buf, int *cnt, int max_v,
                     float a3 = corner_ao(chunk_occ(layer, x - 1, y - 1, z),
                                          chunk_occ(layer, x, y - 1, z + 1),
                                          chunk_occ(layer, x - 1, y - 1, z + 1));
-                    push_quad_ao(buf, cnt, max_v, wx0,wy0,wz0, wx1,wy0,wz0, wx1,wy0,wz1, wx0,wy0,wz1,
-                                 0.60f * a0, 0.60f * a1, 0.60f * a2, 0.60f * a3, style, r, g, b, 255);
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx1,wy0,wz0, wx1,wy0,wz1, wx0,wy0,wz1,
+                                     0.60f * a0, 0.60f * a1, 0.60f * a2, 0.60f * a3, style, r, g, b, 255);
                 }
                 // +X
                 if (!chunk_occ(layer, x + 1, y, z)) {
@@ -691,8 +758,8 @@ static void mesh_layer_to(FbwVert *buf, int *cnt, int max_v,
                     float a3 = corner_ao(chunk_occ(layer, x + 1, y + 1, z),
                                          chunk_occ(layer, x + 1, y, z + 1),
                                          chunk_occ(layer, x + 1, y + 1, z + 1));
-                    push_quad_ao(buf, cnt, max_v, wx1,wy0,wz1, wx1,wy0,wz0, wx1,wy1,wz0, wx1,wy1,wz1,
-                                 0.88f * a0, 0.88f * a1, 0.88f * a2, 0.88f * a3, style, r, g, b, 255);
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz1, wx1,wy0,wz0, wx1,wy1,wz0, wx1,wy1,wz1,
+                                     0.88f * a0, 0.88f * a1, 0.88f * a2, 0.88f * a3, style, r, g, b, 255);
                 }
                 // -X
                 if (!chunk_occ(layer, x - 1, y, z)) {
@@ -708,8 +775,8 @@ static void mesh_layer_to(FbwVert *buf, int *cnt, int max_v,
                     float a3 = corner_ao(chunk_occ(layer, x - 1, y + 1, z),
                                          chunk_occ(layer, x - 1, y, z - 1),
                                          chunk_occ(layer, x - 1, y + 1, z - 1));
-                    push_quad_ao(buf, cnt, max_v, wx0,wy0,wz0, wx0,wy0,wz1, wx0,wy1,wz1, wx0,wy1,wz0,
-                                 0.76f * a0, 0.76f * a1, 0.76f * a2, 0.76f * a3, style, r, g, b, 255);
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx0,wy0,wz1, wx0,wy1,wz1, wx0,wy1,wz0,
+                                     0.76f * a0, 0.76f * a1, 0.76f * a2, 0.76f * a3, style, r, g, b, 255);
                 }
                 // +Z
                 if (!chunk_occ(layer, x, y, z + 1)) {
@@ -725,8 +792,8 @@ static void mesh_layer_to(FbwVert *buf, int *cnt, int max_v,
                     float a3 = corner_ao(chunk_occ(layer, x - 1, y, z + 1),
                                          chunk_occ(layer, x, y + 1, z + 1),
                                          chunk_occ(layer, x - 1, y + 1, z + 1));
-                    push_quad_ao(buf, cnt, max_v, wx0,wy0,wz1, wx1,wy0,wz1, wx1,wy1,wz1, wx0,wy1,wz1,
-                                 0.95f * a0, 0.95f * a1, 0.95f * a2, 0.95f * a3, style, r, g, b, 255);
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz1, wx1,wy0,wz1, wx1,wy1,wz1, wx0,wy1,wz1,
+                                     0.95f * a0, 0.95f * a1, 0.95f * a2, 0.95f * a3, style, r, g, b, 255);
                 }
                 // -Z
                 if (!chunk_occ(layer, x, y, z - 1)) {
@@ -742,8 +809,8 @@ static void mesh_layer_to(FbwVert *buf, int *cnt, int max_v,
                     float a3 = corner_ao(chunk_occ(layer, x + 1, y, z - 1),
                                          chunk_occ(layer, x, y + 1, z - 1),
                                          chunk_occ(layer, x + 1, y + 1, z - 1));
-                    push_quad_ao(buf, cnt, max_v, wx1,wy0,wz0, wx0,wy0,wz0, wx0,wy1,wz0, wx1,wy1,wz0,
-                                 0.70f * a0, 0.70f * a1, 0.70f * a2, 0.70f * a3, style, r, g, b, 255);
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz0, wx0,wy0,wz0, wx0,wy1,wz0, wx1,wy1,wz0,
+                                     0.70f * a0, 0.70f * a1, 0.70f * a2, 0.70f * a3, style, r, g, b, 255);
                 }
             }
         }
@@ -752,13 +819,24 @@ static void mesh_layer_to(FbwVert *buf, int *cnt, int max_v,
 
 static void refresh_inward_grid(void) {
     int i;
-    for (i = 0; i < CHUNK_VOL; i++) g_inward_grid[i] = -1;
+    for (i = 0; i < CHUNK_VOL; i++) {
+        g_inward_grid[i] = -1;
+        g_l1_inward_grid[i] = -1;
+    }
     for (i = 0; i < MAX_INWARD_SLOTS; i++) {
         if (g_inward_valid[i] &&
             g_inward_bx[i] >= 0 && g_inward_bx[i] < 16 &&
             g_inward_by[i] >= 0 && g_inward_by[i] < 16 &&
             g_inward_bz[i] >= 0 && g_inward_bz[i] < 16) {
             g_inward_grid[(g_inward_by[i] << 8) | (g_inward_bz[i] << 4) | g_inward_bx[i]] = i;
+        }
+    }
+    for (i = 0; i < MAX_L1_INWARD_SLOTS; i++) {
+        if (g_l1_inward_valid[i] &&
+            g_l1_inward_bx[i] >= 0 && g_l1_inward_bx[i] < 16 &&
+            g_l1_inward_by[i] >= 0 && g_l1_inward_by[i] < 16 &&
+            g_l1_inward_bz[i] >= 0 && g_l1_inward_bz[i] < 16) {
+            g_l1_inward_grid[(g_l1_inward_by[i] << 8) | (g_l1_inward_bz[i] << 4) | g_l1_inward_bx[i]] = i;
         }
     }
 }
@@ -787,17 +865,17 @@ static void rebuild_band1_mesh(const double ox[MAX_PARENTS], const double oy[MAX
     g_band1_cnt = 0;
 
     // Layer 0 (1x + inward 1/16x sub-voxels)
-    mesh_layer_to(g_band1_verts, &g_band1_cnt, MAX_BAND1_VERTS,
+    mesh_layer_to(&g_band1_verts, &g_band1_cnt, &g_band1_cap, 1,
                   0, 1.0f, 0.0f, 0.0f, 0.0f, 0, 0, 0, 0, 0.0f, 1);
 
-    // Layer 1 (16x parent walls surrounding Layer 0)
+    // Layer 1 (16x parent walls surrounding Layer 0 + inward 1x sub-voxels)
     if (g_parent_valid[0]) {
-        mesh_layer_to(g_band1_verts, &g_band1_cnt, MAX_BAND1_VERTS,
+        mesh_layer_to(&g_band1_verts, &g_band1_cnt, &g_band1_cap, 1,
                       1, 16.0f, (float)ox[0], (float)oy[0], (float)oz[0],
-                      g_parent_bx[0], g_parent_by[0], g_parent_bz[0], 1, 32.0f, 0);
+                      g_parent_bx[0], g_parent_by[0], g_parent_bz[0], 1, 32.0f, 1);
     }
 
-    if (g_gl_ready && g_band1_cnt > 0) {
+    if (g_gl_ready && g_band1_cnt > 0 && g_band1_verts != NULL) {
         glBindBuffer(GL_ARRAY_BUFFER, g_vbo_band1);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(g_band1_cnt * sizeof(FbwVert)),
                      g_band1_verts, GL_DYNAMIC_DRAW);
@@ -808,13 +886,15 @@ static void rebuild_band1_mesh(const double ox[MAX_PARENTS], const double oy[MAX
 static void rebuild_macro_bands(const double ox[MAX_PARENTS], const double oy[MAX_PARENTS], const double oz[MAX_PARENTS]) {
     // Band 2: Layers 2 (256x) & 3 (4096x) divided by 16.0
     g_band2_cnt = 0;
+    FbwVert *b2 = g_band2_verts;
+    int cap2 = MAX_BAND2_VERTS;
     if (g_parent_valid[1]) {
-        mesh_layer_to(g_band2_verts, &g_band2_cnt, MAX_BAND2_VERTS,
+        mesh_layer_to(&b2, &g_band2_cnt, &cap2, 0,
                       2, 16.0f, (float)(ox[1] / 16.0), (float)(oy[1] / 16.0), (float)(oz[1] / 16.0),
                       g_parent_bx[1], g_parent_by[1], g_parent_bz[1], 1, 32.0f, 0);
     }
     if (g_parent_valid[2]) {
-        mesh_layer_to(g_band2_verts, &g_band2_cnt, MAX_BAND2_VERTS,
+        mesh_layer_to(&b2, &g_band2_cnt, &cap2, 0,
                       3, 256.0f, (float)(ox[2] / 16.0), (float)(oy[2] / 16.0), (float)(oz[2] / 16.0),
                       g_parent_bx[2], g_parent_by[2], g_parent_bz[2], 1, 32.0f, 0);
     }
@@ -827,13 +907,15 @@ static void rebuild_macro_bands(const double ox[MAX_PARENTS], const double oy[MA
 
     // Band 3: Layers 4 (65536x) & 5 (1048576x) divided by 4096.0
     g_band3_cnt = 0;
+    FbwVert *b3 = g_band3_verts;
+    int cap3 = MAX_BAND3_VERTS;
     if (g_parent_valid[3]) {
-        mesh_layer_to(g_band3_verts, &g_band3_cnt, MAX_BAND3_VERTS,
+        mesh_layer_to(&b3, &g_band3_cnt, &cap3, 0,
                       4, 16.0f, (float)(ox[3] / 4096.0), (float)(oy[3] / 4096.0), (float)(oz[3] / 4096.0),
                       g_parent_bx[3], g_parent_by[3], g_parent_bz[3], 1, 32.0f, 0);
     }
     if (g_parent_valid[4]) {
-        mesh_layer_to(g_band3_verts, &g_band3_cnt, MAX_BAND3_VERTS,
+        mesh_layer_to(&b3, &g_band3_cnt, &cap3, 0,
                       5, 256.0f, (float)(ox[4] / 4096.0), (float)(oy[4] / 4096.0), (float)(oz[4] / 4096.0),
                       g_parent_bx[4], g_parent_by[4], g_parent_bz[4], 1, 32.0f, 0);
     }
@@ -1116,6 +1198,25 @@ FBW_VIS_DEFAULT void fbw_gl_push_inward_quad(int slot, int qidx, int packed4) {
     g_inward[slot][base + 1] = (uint8_t)((u >> 8) & 0xffu);
     g_inward[slot][base + 2] = (uint8_t)((u >> 16) & 0xffu);
     g_inward[slot][base + 3] = (uint8_t)((u >> 24) & 0xffu);
+}
+
+FBW_VIS_DEFAULT void fbw_gl_set_l1_inward_meta(int slot, int valid, int bx, int by, int bz, int biome) {
+    if (slot < 0 || slot >= MAX_L1_INWARD_SLOTS) return;
+    g_l1_inward_valid[slot] = valid;
+    g_l1_inward_bx[slot] = bx;
+    g_l1_inward_by[slot] = by;
+    g_l1_inward_bz[slot] = bz;
+    g_l1_inward_biome[slot] = biome;
+}
+
+FBW_VIS_DEFAULT void fbw_gl_push_l1_inward_quad(int slot, int qidx, int packed4) {
+    if (slot < 0 || slot >= MAX_L1_INWARD_SLOTS || qidx < 0 || qidx >= 1024) return;
+    uint32_t u = (uint32_t)packed4;
+    int base = qidx * 4;
+    g_l1_inward[slot][base + 0] = (uint8_t)(u & 0xffu);
+    g_l1_inward[slot][base + 1] = (uint8_t)((u >> 8) & 0xffu);
+    g_l1_inward[slot][base + 2] = (uint8_t)((u >> 16) & 0xffu);
+    g_l1_inward[slot][base + 3] = (uint8_t)((u >> 24) & 0xffu);
 }
 
 FBW_VIS_DEFAULT void fbw_gl_mark_inward_dirty(void) {
