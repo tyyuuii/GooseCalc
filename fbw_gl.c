@@ -218,7 +218,11 @@ static const char *SKY_VS =
     "}\n";
 
 static const char *SKY_FS =
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
     "precision highp float;\n"
+    "#else\n"
+    "precision mediump float;\n"
+    "#endif\n"
     "varying vec2 v_ndc;\n"
     "uniform vec3 u_top;\n"
     "uniform vec3 u_bot;\n"
@@ -272,7 +276,11 @@ static const char *WORLD_VS =
     "}\n";
 
 static const char *WORLD_FS =
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
     "precision highp float;\n"
+    "#else\n"
+    "precision mediump float;\n"
+    "#endif\n"
     "varying vec3 v_pos;\n"
     "varying vec4 v_meta;\n"
     "varying vec4 v_col;\n"
@@ -1247,10 +1255,10 @@ static void rebuild_band1_shell(const double ox[MAX_PARENTS], const double oy[MA
                       g_parent_bx[0], g_parent_by[0], g_parent_bz[0], 1, 32.0f, 1);
     }
 
-    if (g_gl_ready && g_band1_verts != NULL) {
+    if (g_gl_ready && g_band1_cnt > 0 && g_band1_verts != NULL) {
         glBindBuffer(GL_ARRAY_BUFFER, g_vbo_band1);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(g_band1_cnt * sizeof(FbwVert)),
-                     g_band1_cnt > 0 ? g_band1_verts : NULL, GL_DYNAMIC_DRAW);
+                     g_band1_verts, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
     g_shell_dirty = 0;
@@ -1772,6 +1780,12 @@ FBW_VIS_DEFAULT void fbw_gl_push_beam(int active, int x1_mm, int y1_mm, int z1_m
 }
 
 FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
+    if (g_gl_ready && (!glIsProgram(g_prog_sky) || !glIsProgram(g_prog_world))) {
+        g_gl_ready = 0;
+        g_chunks_dirty = 1;
+        g_shell_dirty = 1;
+        g_inward_dirty = 1;
+    }
     init_gl_resources();
     if (!g_gl_ready) return;
 

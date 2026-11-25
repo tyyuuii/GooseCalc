@@ -613,11 +613,17 @@ fn dst_set_block(dst_layer: i32, x: i32, y: i32, z: i32, b: u8) {
         st.blocks[idx] = b;
     } else if dst_layer == 5 {
         st.scratch_blocks[idx] = b;
-    } else if dst_layer >= 100 {
-        st.neighbor_blocks[(dst_layer - 100) * CHUNK_VOL + idx] = b;
+    } else if dst_layer >= 1000 {
+        let nb = dst_layer - 1000;
+        if nb >= 0 && nb < MAX_NEIGHBORS {
+            st.neighbor_blocks[nb * CHUNK_VOL + idx] = b;
+        }
     } else if dst_layer >= 10 {
-        st.inward_blocks[(dst_layer - 10) * CHUNK_VOL + idx] = b;
-    } else {
+        let slot = dst_layer - 10;
+        if slot >= 0 && slot < 256 {
+            st.inward_blocks[slot * CHUNK_VOL + idx] = b;
+        }
+    } else if dst_layer >= 0 && dst_layer < 5 {
         st.parent_blocks[dst_layer * CHUNK_VOL + idx] = b;
     }
 }
@@ -631,12 +637,22 @@ fn dst_get_block(dst_layer: i32, x: i32, y: i32, z: i32) -> u8 {
         return st.blocks[idx];
     } else if dst_layer == 5 {
         return st.scratch_blocks[idx];
-    } else if dst_layer >= 100 {
-        return st.neighbor_blocks[(dst_layer - 100) * CHUNK_VOL + idx];
+    } else if dst_layer >= 1000 {
+        let nb = dst_layer - 1000;
+        if nb >= 0 && nb < MAX_NEIGHBORS {
+            return st.neighbor_blocks[nb * CHUNK_VOL + idx];
+        }
+        return BLK_AIR;
     } else if dst_layer >= 10 {
-        return st.inward_blocks[(dst_layer - 10) * CHUNK_VOL + idx];
+        let slot = dst_layer - 10;
+        if slot >= 0 && slot < 256 {
+            return st.inward_blocks[slot * CHUNK_VOL + idx];
+        }
+        return BLK_AIR;
+    } else if dst_layer >= 0 && dst_layer < 5 {
+        return st.parent_blocks[dst_layer * CHUNK_VOL + idx];
     }
-    return st.parent_blocks[dst_layer * CHUNK_VOL + idx];
+    return BLK_AIR;
 }
 
 fn queue_sfx(kind: i32) {
@@ -2097,9 +2113,15 @@ fn generate_chunk_blocks_to(dst_layer: i32, depth: i32, biome: i32, parent_blk: 
     while i < CHUNK_VOL {
         if dst_layer < 0 { st.blocks[i] = BLK_AIR; }
         else if dst_layer == 5 { st.scratch_blocks[i] = BLK_AIR; }
-        else if dst_layer >= 100 { st.neighbor_blocks[(dst_layer - 100) * CHUNK_VOL + i] = BLK_AIR; }
-        else if dst_layer >= 10 { st.inward_blocks[(dst_layer - 10) * CHUNK_VOL + i] = BLK_AIR; }
-        else { st.parent_blocks[dst_layer * CHUNK_VOL + i] = BLK_AIR; }
+        else if dst_layer >= 1000 {
+            let nb = dst_layer - 1000;
+            if nb >= 0 && nb < MAX_NEIGHBORS { st.neighbor_blocks[nb * CHUNK_VOL + i] = BLK_AIR; }
+        } else if dst_layer >= 10 {
+            let slot = dst_layer - 10;
+            if slot >= 0 && slot < 256 { st.inward_blocks[slot * CHUNK_VOL + i] = BLK_AIR; }
+        } else if dst_layer >= 0 && dst_layer < 5 {
+            st.parent_blocks[dst_layer * CHUNK_VOL + i] = BLK_AIR;
+        }
         i = i + 1;
     }
 
@@ -2260,7 +2282,7 @@ fn resolve_neighbor_chunk(slot: i32, dx: i32, dy: i32, dz: i32) {
         wd = wd + 1;
     }
 
-    generate_chunk_blocks_to(100 + slot, st.depth, rbio, rblk, rseed, rair);
+    generate_chunk_blocks_to(1000 + slot, st.depth, rbio, rblk, rseed, rair);
     st.neighbor_valid[slot] = 1;
     st.neighbor_biome[slot] = rbio;
 }
