@@ -88,7 +88,9 @@
 #define CHUNK_VOL         4096
 #define MAX_LAYERS        6
 #define MAX_PARENTS       5
-#define MAX_NEIGHBORS     10
+#define MAX_NEIGHBORS     342
+#define NEIGH_MAP_DIM     7   /* offsets -3..3 encoded base-7 */
+#define NEIGH_MAP_SIZE    (NEIGH_MAP_DIM * NEIGH_MAP_DIM * NEIGH_MAP_DIM)
 #define MAX_INWARD_SLOTS    256
 #define MAX_L1_INWARD_SLOTS 64
 #define MAX_BAND1_INIT      131072
@@ -659,15 +661,31 @@ static void emit_cube(FbwVert *buf, int *cnt, int max_v,
     push_quad(buf, cnt, max_v, x1,y0,z0, x0,y0,z0, x0,y1,z0, x1,y1,z0, 0.72f, style, r, g, b, a);
 }
 
+/* offset (dx,dy,dz) in -3..3 -> neighbor slot + 1 (0 = none); O(1) for kilochunk meshing */
+static int g_neighbor_map[NEIGH_MAP_SIZE];
+
+static void neighbor_map_rebuild(void) {
+    memset(g_neighbor_map, 0, sizeof(g_neighbor_map));
+    for (int s = 0; s < MAX_NEIGHBORS; s++) {
+        if (!g_neighbor_valid[s]) continue;
+        int dx = g_neighbor_dx[s], dy = g_neighbor_dy[s], dz = g_neighbor_dz[s];
+        if (dx < -3 || dx > 3 || dy < -3 || dy > 3 || dz < -3 || dz > 3) continue;
+        g_neighbor_map[((dx + 3) * NEIGH_MAP_DIM + (dy + 3)) * NEIGH_MAP_DIM + (dz + 3)] = s + 1;
+    }
+}
+
+static inline int neighbor_slot_at_offset(int ox, int oy, int oz) {
+    if (ox < -3 || ox > 3 || oy < -3 || oy > 3 || oz < -3 || oz > 3) return -1;
+    int s = g_neighbor_map[((ox + 3) * NEIGH_MAP_DIM + (oy + 3)) * NEIGH_MAP_DIM + (oz + 3)] - 1;
+    if (s < 0 || s >= MAX_NEIGHBORS || !g_neighbor_valid[s]) return -1;
+    return s;
+}
+
 static inline uint8_t neighbor_at_offset(int ox, int oy, int oz, int lx, int ly, int lz) {
     if (lx < 0 || lx >= 16 || ly < 0 || ly >= 16 || lz < 0 || lz >= 16) return BLK_AIR;
-    for (int s = 0; s < MAX_NEIGHBORS; s++) {
-        if (g_neighbor_valid[s] &&
-            g_neighbor_dx[s] == ox && g_neighbor_dy[s] == oy && g_neighbor_dz[s] == oz) {
-            return g_neighbors[s][(ly << 8) | (lz << 4) | lx];
-        }
-    }
-    return BLK_AIR;
+    int s = neighbor_slot_at_offset(ox, oy, oz);
+    if (s < 0) return BLK_AIR;
+    return g_neighbors[s][(ly << 8) | (lz << 4) | lx];
 }
 
 static inline int is_l1_covered_by_neighbor(int x, int y, int z) {
@@ -675,20 +693,14 @@ static inline int is_l1_covered_by_neighbor(int x, int y, int z) {
     int dx = x - g_parent_bx[0];
     int dy = y - g_parent_by[0];
     int dz = z - g_parent_bz[0];
-    for (int nb = 0; nb < MAX_NEIGHBORS; nb++) {
-        if (g_neighbor_valid[nb] &&
-            g_neighbor_dx[nb] == dx && g_neighbor_dy[nb] == dy && g_neighbor_dz[nb] == dz) {
-            return 1;
-        }
-    }
-    return 0;
+    return neighbor_slot_at_offset(dx, dy, dz) >= 0 ? 1 : 0;
 }
 
 static inline uint8_t chunk_at(int layer, int x, int y, int z) {
     if (x >= 0 && x < 16 && y >= 0 && y < 16 && z >= 0 && z < 16) {
         return g_chunks[layer][(y << 8) | (z << 4) | x];
     }
-    if (layer == 0 && x >= -16 && x < 32 && y >= -16 && y < 32 && z >= -16 && z < 32) {
+    if (layer == 0 && x >= -48 && x < 64 && y >= -48 && y < 64 && z >= -48 && z < 64) {
         int ox = (x < 0) ? -1 : ((x >= 16) ? 1 : 0);
         int oy = (y < 0) ? -1 : ((y >= 16) ? 1 : 0);
         int oz = (z < 0) ? -1 : ((z >= 16) ? 1 : 0);
@@ -1688,6 +1700,7 @@ FBW_VIS_DEFAULT void fbw_gl_set_neighbor_meta(int nb, int valid, int dx, int dy,
     g_neighbor_dy[nb] = dy;
     g_neighbor_dz[nb] = dz;
     g_neighbor_biome[nb] = biome;
+    neighbor_map_rebuild();
 }
 
 FBW_VIS_DEFAULT void fbw_gl_push_neighbor_quad(int nb, int qidx, int packed4) {

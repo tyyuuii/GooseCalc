@@ -67,3 +67,61 @@ All changes are in `src/fbw_core.goose` + `src/fbw_mobile.goose`. Typechecked wi
 - Regenerated `calc_main.c/h` and rebuilt the x86 headless harness: calculator + Sudoku paths unchanged,
   FBW ran a 4000-frame fly-and-fight scenario (flight stick, held fire, look drags) with zero crashes;
   HUD now reports authentic start stats (`HP 100/100 SHD 25 ARM 0`) and `Lv1 XP0%`.
+
+---
+
+# Round 2 — Map/progression fidelity, optional size change, kilochunk view distance
+
+## Evidence the port's map & progression diverged from the Steam original
+
+- **Official Steam screenshot** (`ss_edf19e21bfcc2c1995e50072e6d0927.1920x1080.jpg`, steambase.io mirror of
+  Steam CDN): HUD shows `Level: 15`, and the terrain's black chunk-boundary grid lines run continuously
+  across **dozens of chunks** into the distance — structures do *not* pop in/out one chunk away.
+  (saved for reference in `image-search/fractal-block-world-steam-game-screensho-3.jpg`, second view in
+  `...-2.jpg`).
+- **Wiki, Tutorial page** (fractalblockworld.wiki.gg/wiki/Tutorial, fetched 2026-11-25):
+  - *"The **Tutorial** is a location in the **Ying World** … found inside every Ying Flower"* — the
+    Tutorial Island is one landmark inside a much larger same-scale region, not a sealed world.
+  - *"In the surrounding **Kilochunk**, the player can see the entire structure of the Tutorial."*
+    A kilochunk = 4096³ blocks ≈ 16 chunks per axis. The original renders the whole structure; the port
+    drew 1 chunk + 10 neighbors (pop-in at every chunk boundary).
+  - *"**If the player doesn't grow after exiting the Tutorial**, the Blue Ring … will be replaced by
+    another pedestal with a smaller Blue Ring (which will still take the player to the start)"* —
+    **growing after the Tutorial is optional**, and *"The player can grow using the Expander"* —
+    size changes happen only through rings/expanders, never automatically at a boundary.
+- **Steam discussion** (16³ chunks per level, recursive; whole world in one root chunk) confirms the
+  scale model the port already uses — the divergence was purely the *view distance* and the forced grow.
+
+## Fixes in this round
+
+| # | Bug | Was | Now (authentic) |
+|---|-----|-----|-----------------|
+| 1 | **Forced size change leaving Tutorial Island** | any boundary crossing at depth ≤ 0 with a solid parent chunk force-grew 16× (`grow_out_axis`) — you could not fly around the island at the same size | boundary crossings at **every depth** use the same-size lateral world shift (`step_air_single_axis`); `grow_out_axis` remains only for ring/expander use; a soft in-bounds clamp is the sole safety net |
+| 2 | **Chunk pop-in (1-chunk view distance)** | 1 chunk + 10 neighbors (6 faces + 4 diagonals), `world_block_rel`/`chunk_at` limited to ±1 | **ring-ordered sibling set out to radius 1–3** (26 / 124 / 340 sibling chunks; full 7³−1 kilochunk ring at radius 3), resolved nearest-ring-first on every chunk load |
+| 3 | **No view-distance option** | fixed invisible cap | new **`VIEW DIST: N CHUNKS` slider** in the pause menu (1–3, default 2, validated + persisted like the LOD slider); tapping it reloads chunks instantly and reports `VIEW DIST: 3 CHUNKS (342 LOADED)` |
+| 4 | Renderer capacity | C side hardcoded `MAX_NEIGHBORS 10` with O(n) offset scans | C side raised to **342** with an O(1) offset→slot hash map (`neighbor_map_rebuild` on meta sync), `chunk_at`/`world_block_rel` ranges widened to ±3 chunks; meshing is dirty-flagged so the cost is one rebuild per change |
+
+Pause menu layout: the two full-width bottom buttons became side-by-side **RESTART RUN | EXIT** to make
+room for the new slider row.
+
+## APK / UnsatisfiedLinkError safety (verified)
+
+- The Java-visible JNI surface is exactly the same 7 exported functions as before
+  (`goose_init`, `goose_exit`, `goose_draw`, `goose_handle_back`, `goose_handle_pointer`,
+  `goose_handle_touch`, `goose_force_resize`) — verified by diffing `calc_main.h` exports and
+  `nm calc_main.o` before/after: **identical**.
+- `fbw_gl.h` is unchanged; `fbw_gl.c` adds only a `static` helper. All 19 `fbw_gl_*` symbols referenced
+  by the regenerated `calc_main.o` are defined in `fbw_gl.o` (checked with `nm`); the 3 remaining
+  externs (`fbw_now_ms`, `fbw_sound_fx`, `fbw_set_orientation`) are provided by `main.c` as before.
+- The Makefile regenerates `calc_main.c` from `src/calc_main.goose` on build
+  (`goose --standalone --header calc_main.h -o $@ $<`), so source and generated C can never desync.
+- No new Goose `export fn`, no new `extern` declarations, no signature changes anywhere.
+
+## Verification (this round)
+
+- `goose check` → 0 errors; headless harness full regression (calculator/sudoku/FBW) exit 0.
+- Boundary flight test (2500 frames, forward+up+yaw sweep into the island edges): **0 forced-grow
+  events, LVL stayed 0** (was: every edge reach force-grew + leveled up).
+- Pause → drag VIEW DIST slider to 3 → resume → 900-frame flight at radius 3 (342 neighbors):
+  exit 0, status `VIEW DIST: 3 CHUNKS (342 LOADED)`, modal shows `VIEW DIST: 3 CHUNKS`.
+- `fbw_gl.c` syntax-checked (GLES3 stub headers); host link of calc_main.o + fbw_gl.o symbol-complete.

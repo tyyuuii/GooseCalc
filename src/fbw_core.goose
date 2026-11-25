@@ -140,7 +140,7 @@ const SFX_PICKUP: i32 = 5;
 const SFX_HURT: i32 = 6;
 const SFX_EMP: i32 = 7;
 
-const MAX_NEIGHBORS: i32 = 10;
+const MAX_NEIGHBORS: i32 = 342; // ring-ordered sibling set (radius 3 = 7^3-1); Xar kilochunk-scale visibility
 const MAX_CLEARED_CHUNKS: i32 = 128;
 
 // 10 Authentic Weapons (Keys 1..9, 0)
@@ -247,17 +247,18 @@ root struct fbw_state {
     shrink_any: i32,   // 1 = Shrink into ANY touched block (Xar 'shrinkany')
     disable_lod: i32,  // 1 = Disable LOD optimization (load all on-screen interiors across all scales)
     lod_dist_level: i32, // 1..7 LOD distance slider level (default 4)
+    view_chunk_radius: i32, // 1..3 sibling-chunk visibility radius (Xar kilochunk slider; default 2)
 
     // Unbounded recursive 16x16x16 world stack (-128..3000) + 10 sibling neighbor chunks
     blocks: u8[CHUNK_VOL],
     parent_blocks: u8[20480], // MAX_PARENT_VIS (5) * CHUNK_VOL
     scratch_blocks: u8[CHUNK_VOL],
-    neighbor_blocks: u8[40960], // MAX_NEIGHBORS (10) * CHUNK_VOL
-    neighbor_valid: i32[10],
-    neighbor_dx: i32[10],
-    neighbor_dy: i32[10],
-    neighbor_dz: i32[10],
-    neighbor_biome: i32[10],
+    neighbor_blocks: u8[1400832], // MAX_NEIGHBORS (342) * CHUNK_VOL
+    neighbor_valid: i32[342],
+    neighbor_dx: i32[342],
+    neighbor_dy: i32[342],
+    neighbor_dz: i32[342],
+    neighbor_biome: i32[342],
     inward_blocks: u8[1048576], // 256-slot * CHUNK_VOL multi-layer 3D sub-voxel cache
     inward_seeds: u64[256],
     inward_blks: u8[256],
@@ -2343,12 +2344,12 @@ fn world_block_rel(bx: i32, by: i32, bz: i32) -> u8 {
     if bx >= 0 && bx < CHUNK_DIM && by >= 0 && by < CHUNK_DIM && bz >= 0 && bz < CHUNK_DIM {
         return st.blocks[b_idx(bx, by, bz)];
     }
-    if bx < -16 || bx >= 32 || by < -16 || by >= 32 || bz < -16 || bz >= 32 {
+    if bx < -48 || bx >= 64 || by < -48 || by >= 64 || bz < -48 || bz >= 64 {
         return BLK_AIR;
     }
-    let ox: i32 = if bx < 0 { -1 } else if bx >= CHUNK_DIM { 1 } else { 0 };
-    let oy: i32 = if by < 0 { -1 } else if by >= CHUNK_DIM { 1 } else { 0 };
-    let oz: i32 = if bz < 0 { -1 } else if bz >= CHUNK_DIM { 1 } else { 0 };
+    let ox: i32 = if bx >= 48 { 3 } else if bx >= 32 { 2 } else if bx >= CHUNK_DIM { 1 } else if bx >= 0 { 0 } else if bx >= -16 { -1 } else if bx >= -32 { -2 } else { -3 };
+    let oy: i32 = if by >= 48 { 3 } else if by >= 32 { 2 } else if by >= CHUNK_DIM { 1 } else if by >= 0 { 0 } else if by >= -16 { -1 } else if by >= -32 { -2 } else { -3 };
+    let oz: i32 = if bz >= 48 { 3 } else if bz >= 32 { 2 } else if bz >= CHUNK_DIM { 1 } else if bz >= 0 { 0 } else if bz >= -16 { -1 } else if bz >= -32 { -2 } else { -3 };
     var s: i32 = 0;
     while s < MAX_NEIGHBORS {
         if st.neighbor_valid[s] != 0 &&
@@ -2391,17 +2392,38 @@ fn load_current_chunk() {
         populate_interior_biome_entities(biome, st.depth);
     }
 
-    // Populate 10 sibling neighbor chunks at current depth for seamless multi-chunk visibility & combat
-    resolve_neighbor_chunk(0, -1, 0, 0);
-    resolve_neighbor_chunk(1, 1, 0, 0);
-    resolve_neighbor_chunk(2, 0, 0, -1);
-    resolve_neighbor_chunk(3, 0, 0, 1);
-    resolve_neighbor_chunk(4, -1, 0, -1);
-    resolve_neighbor_chunk(5, 1, 0, -1);
-    resolve_neighbor_chunk(6, -1, 0, 1);
-    resolve_neighbor_chunk(7, 1, 0, 1);
-    resolve_neighbor_chunk(8, 0, 1, 0);
-    resolve_neighbor_chunk(9, 0, -1, 0);
+    // Populate sibling neighbor chunks ring-by-ring out to view_chunk_radius (Xar renders a
+    // location's whole structure from its surrounding kilochunk; nearest rings first)
+    var nslot: i32 = 0;
+    var ring: i32 = 1;
+    while ring <= 3 {
+        if ring > st.view_chunk_radius { break; }
+        var odx: i32 = -ring;
+        while odx <= ring {
+            var ody: i32 = -ring;
+            while ody <= ring {
+                var odz: i32 = -ring;
+                while odz <= ring {
+                    let ax = if odx < 0 { -odx } else { odx };
+                    let ay = if ody < 0 { -ody } else { ody };
+                    let az = if odz < 0 { -odz } else { odz };
+                    let mx = if ax >= ay && ax >= az { ax } else if ay >= az { ay } else { az };
+                    if mx == ring && nslot < MAX_NEIGHBORS {
+                        resolve_neighbor_chunk(nslot, odx, ody, odz);
+                        nslot = nslot + 1;
+                    }
+                    odz = odz + 1;
+                }
+                ody = ody + 1;
+            }
+            odx = odx + 1;
+        }
+        ring = ring + 1;
+    }
+    while nslot < MAX_NEIGHBORS {
+        st.neighbor_valid[nslot] = 0;
+        nslot = nslot + 1;
+    }
 
     // Populate 5 outward parent visibility layers (16x .. 1,048,576x) for colossal scale rendering
     var pl: i32 = 0;
@@ -3359,7 +3381,10 @@ fn move_player_vec(dx: f64, dy: f64, dz: f64) {
     var step_i: i32 = 0;
 
     while step_i < n_steps {
-        let can_cross = if cur_parent_block() == BLK_AIR || st.depth >= 1 { 1 } else { 0 };
+        // Xar: leaving a structure NEVER forces a size change — the world extends laterally
+        // at the same scale (growing after the Tutorial is optional; rings are the only
+        // size-change mechanism), so boundary shifts are allowed at every depth.
+        let can_cross: i32 = 1;
         let nx = st.px + sx;
         if can_cross != 0 && (nx < 0.0 || nx >= 16.0) {
             let sdir: i32 = if nx < 0.0 { -1 } else { 1 };
@@ -3407,7 +3432,11 @@ fn move_player_vec(dx: f64, dy: f64, dz: f64) {
         }
         if st.depth <= 0 && cur_parent_block() != BLK_AIR {
             if st.px < 0.0 || st.px >= 16.0 || st.py < 0.0 || st.py >= 16.0 || st.pz < 0.0 || st.pz >= 16.0 {
-                grow_out_axis(st.px, st.py, st.pz);
+                // Safety net only (Xar never force-grows at a boundary): squeeze back in-bounds
+                st.px = fclamp(st.px, 0.25, 15.75);
+                st.py = fclamp(st.py, 0.25, 15.75);
+                st.pz = fclamp(st.pz, 0.25, 15.75);
+                st.vx = 0.0; st.vy = 0.0; st.vz = 0.0;
                 return;
             }
         }

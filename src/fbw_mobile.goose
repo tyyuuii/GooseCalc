@@ -243,6 +243,9 @@ fn fbw_mobile_enter() {
     if st.lod_dist_level < 1 || st.lod_dist_level > 7 {
         st.lod_dist_level = 4;
     }
+    if st.view_chunk_radius < 1 || st.view_chunk_radius > 3 {
+        st.view_chunk_radius = 2;
+    }
     st.screen = SCREEN_PLAY;
     g_mob.last_ms = fbw_now_ms();
     g_mob.sync_force = 1;
@@ -1139,6 +1142,9 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
     if st.lod_dist_level < 1 || st.lod_dist_level > 7 {
         st.lod_dist_level = 4;
     }
+    if st.view_chunk_radius < 1 || st.view_chunk_radius > 3 {
+        st.view_chunk_radius = 2;
+    }
     // 1. Hardware OpenGL Pass (Sky + 5 Macro Parents + Layer 0 + Inward 1/16x LOD + Dynamic)
     fbw_gl_set_lod_config(st.disable_lod, st.lod_dist_level);
     sync_chunks_to_gl();
@@ -1803,8 +1809,29 @@ fn draw_mobile_modal(w: i32, h: i32) {
         draw_rect(tx1 + 2, sy + 13, fx2 - 2, sy + 23);
         let kx = tx1 + (tw * (2 * lv - 1)) / 14;
         fbw_box(kx - 5, sy + 7, kx + 5, sy + 29, 0xFACC15FF, 0xFFFFFFFF);
-        draw_modal_row_h(mx, my + 246, mw, 36, "RESTART NEW RUN", 0x7C2D12FF, 0xFFFFFFFF);
-        draw_modal_row_h(mx, my + 286, mw, 36, "EXIT TO GOOSECALC", 0x7F1D1DFF, 0xFFFFFFFF);
+        let vy = my + 246;
+        fbw_box(mx + 18, vy, mx + mw - 18, vy + 36, 0x0F172AFF, 0x38BDF8FF);
+        var vb: u8[160] = [0; 160];
+        var vl: i32 = 0;
+        let vr = clamp_i(st.view_chunk_radius, 1, 3);
+        buf_str(vb, vl, "VIEW DIST: ");
+        buf_int(vb, vl, vr);
+        buf_str(vb, vl, " CHUNKS");
+        vb[vl] = 0;
+        set_color(0xFFFFFFFF);
+        fbw_text(mx + 30, vy + 10, vb[0..vl], 2);
+        let vx1 = mx + (mw * 42) / 100;
+        let vx2 = mx + mw - 30;
+        let vw = vx2 - vx1;
+        fbw_box(vx1, vy + 11, vx2, vy + 25, 0x1E293BFF, 0x475569FF);
+        let vfx = vx1 + (vw * vr) / 3;
+        set_color(0x38BDF8FF);
+        draw_rect(vx1 + 2, vy + 13, vfx - 2, vy + 23);
+        let vkx = vx1 + (vw * (2 * vr - 1)) / 6;
+        fbw_box(vkx - 5, vy + 7, vkx + 5, vy + 29, 0xFACC15FF, 0xFFFFFFFF);
+        let rw2 = (mw - 42) / 2;
+        draw_modal_row_h(mx + 18, my + 286, rw2, 36, "RESTART RUN", 0x7C2D12FF, 0xFFFFFFFF);
+        draw_modal_row_h(mx + 24 + rw2, my + 286, rw2, 36, "EXIT", 0x7F1D1DFF, 0xFFFFFFFF);
     }
 }
 
@@ -1813,7 +1840,7 @@ fn handle_modal_tap(x: i32, y: i32) {
     let w = g_mob.lay.w;
     let h = g_mob.lay.h;
     let mw = clamp_i((w * 74) / 100, 440, 780);
-    let mh = clamp_i((h * 80) / 100, 340, 580);
+    let mh = clamp_i((h * 80) / 100, 400, 580);
     let mx = (w - mw) / 2;
     let my = (h - mh) / 2;
 
@@ -1976,12 +2003,46 @@ fn handle_modal_tap(x: i32, y: i32) {
             return;
         }
         if y >= my + 246 && y <= my + 282 {
+            let vx1 = mx + (mw * 42) / 100;
+            let vx2 = mx + mw - 30;
+            let vw = vx2 - vx1;
+            var vr = st.view_chunk_radius;
+            if x >= vx1 - 10 && vw > 0 {
+                vr = clamp_i(1 + ((x - vx1) * 3) / vw, 1, 3);
+            } else {
+                vr = (clamp_i(vr, 1, 3) % 3) + 1;
+            }
+            if vr != st.view_chunk_radius {
+                st.view_chunk_radius = vr;
+                load_current_chunk();
+                var nv: i32 = 0;
+                var ci: i32 = 0;
+                while ci < MAX_NEIGHBORS {
+                    if st.neighbor_valid[ci] != 0 { nv = nv + 1; }
+                    ci = ci + 1;
+                }
+                g_mob.sync_force = 1;
+                var mb: u8[160] = [0; 160];
+                var ml: i32 = 0;
+                buf_str(mb, ml, "VIEW DIST: ");
+                buf_int(mb, ml, vr);
+                buf_str(mb, ml, " CHUNKS (");
+                buf_int(mb, ml, nv);
+                buf_str(mb, ml, " LOADED)");
+                mb[ml] = 0;
+                set_status_msg(mb[0..ml], 1600);
+            }
+            fbw_sound_fx(0);
+            return;
+        }
+        let rw2 = (mw - 42) / 2;
+        if in_box(x, y, mx + 18, my + 286, mx + 18 + rw2, my + 322) {
             init_new_game();
             st.screen = SCREEN_PLAY;
             g_mob.sync_force = 1;
             return;
         }
-        if y >= my + 286 && y <= my + 322 {
+        if in_box(x, y, mx + 24 + rw2, my + 286, mx + mw - 18, my + 322) {
             g_mob.want_exit_to_calc = 1;
             return;
         }
