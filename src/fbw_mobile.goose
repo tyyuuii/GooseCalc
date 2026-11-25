@@ -120,6 +120,8 @@ struct MobileController {
     hold_roll_r: i32,
     stick_dx: f64,
     stick_dy: f64,
+    info_marker_page: i32,
+    fps_ms: i32,
 }
 
 var g_mob: MobileController;
@@ -255,6 +257,10 @@ fn fbw_mobile_enter() {
     g_mob.hold_roll_r = 0;
     g_mob.stick_dx = 0.0;
     g_mob.stick_dy = 0.0;
+    g_mob.info_marker_page = 0;
+    g_mob.fps_ms = g_mob.last_ms;
+    st.frame_cnt = 0;
+    st.fps = 60;
     var i: i32 = 0;
     while i < MAX_POINTERS {
         g_mob.ptrs[i].active = 0;
@@ -339,6 +345,26 @@ fn sync_chunks_to_gl() {
             }
         }
         p = p + 1;
+    }
+
+    var nb: i32 = 0;
+    while nb < MAX_NEIGHBORS {
+        fbw_gl_set_neighbor_meta(nb, st.neighbor_valid[nb], st.neighbor_dx[nb], st.neighbor_dy[nb], st.neighbor_dz[nb], st.neighbor_biome[nb]);
+        if st.neighbor_valid[nb] != 0 {
+            let n_off = nb * CHUNK_VOL;
+            q = 0;
+            while q < 1024 {
+                let base = n_off + q * 4;
+                let b0 = st.neighbor_blocks[base + 0] as! i32;
+                let b1 = st.neighbor_blocks[base + 1] as! i32;
+                let b2 = st.neighbor_blocks[base + 2] as! i32;
+                let b3 = st.neighbor_blocks[base + 3] as! i32;
+                let packed = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                fbw_gl_push_neighbor_quad(nb, q, packed);
+                q = q + 1;
+            }
+        }
+        nb = nb + 1;
     }
 
     fbw_gl_mark_chunks_dirty();
@@ -949,6 +975,16 @@ fn sync_dynamic_to_gl() {
         i = i + 1;
     }
 
+    if st.markers[0].used != 0 && st.markers[0].depth == st.depth {
+        fbw_gl_push_entity(
+            ENT_MARKER_BEACON,
+            (st.markers[0].px * 1000.0) as! i32,
+            (st.markers[0].py * 1000.0) as! i32,
+            (st.markers[0].pz * 1000.0) as! i32,
+            1, 1, 0
+        );
+    }
+
     if st.beam_timer_ms > 0 {
         fbw_gl_push_beam(
             1,
@@ -1029,8 +1065,15 @@ fn step_mobile_controls(dt_ms: i32) {
     if g_mob.hold_fire != 0 {
         if st.fire_cd_ms <= 0 {
             fire_weapon(0);
-            fbw_sound_fx(if st.weapon == WEP_LASER || st.weapon == WEP_RAILGUN { 2 } else { 1 });
         }
+    }
+}
+
+fn drain_pending_sfx() {
+    let st = core();
+    if st.pending_sfx >= 0 {
+        fbw_sound_fx(st.pending_sfx);
+        st.pending_sfx = -1;
     }
 }
 
@@ -1046,12 +1089,21 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
     if dt_ms < 1 { dt_ms = 16; }
     if dt_ms > 50 { dt_ms = 50; }
 
+    st.frame_cnt = st.frame_cnt + 1;
+    let fps_dt = now - g_mob.fps_ms;
+    if fps_dt >= 500 {
+        st.fps = clamp_i((st.frame_cnt * 1000) / fps_dt, 1, 240);
+        st.frame_cnt = 0;
+        g_mob.fps_ms = now;
+    }
+
     let prev_depth = st.depth;
     let prev_rev = st.chunk_rev;
 
     if st.screen == SCREEN_PLAY {
         step_mobile_controls(dt_ms);
         step_simulation(dt_ms);
+        drain_pending_sfx();
     } else {
         st.anim_ms = st.anim_ms + dt_ms;
     }
@@ -1142,6 +1194,13 @@ fn wep_tag(w: i32, quasar: i32) -> const u8[:] {
     return "0:DRK";
 }
 
+fn buf_pad2(buf: u8[160]&, len: i32&, v: i32) {
+    if v < 10 {
+        if len < 158 { buf[len] = '0'; len = len + 1; }
+    }
+    buf_int(buf, len, v);
+}
+
 fn draw_mobile_hud(w: i32, h: i32) {
     let st = core();
     let l = &g_mob.lay;
@@ -1153,108 +1212,198 @@ fn draw_mobile_hud(w: i32, h: i32) {
     var n1: i32 = 0;
     buf_str(b1, n1, "HP "); buf_int(b1, n1, st.hp);
     buf_str(b1, n1, "/"); buf_int(b1, n1, st.max_hp);
-    buf_str(b1, n1, "  ARM "); buf_int(b1, n1, st.armor);
-    buf_str(b1, n1, "  G "); buf_int(b1, n1, st.gold);
-    buf_str(b1, n1, "  K "); buf_int(b1, n1, st.keys);
+    buf_str(b1, n1, " SHD "); buf_int(b1, n1, st.shields);
+    buf_str(b1, n1, " ARM "); buf_int(b1, n1, st.armor);
+    buf_str(b1, n1, " G "); buf_int(b1, n1, st.gold);
+    buf_str(b1, n1, " K "); buf_int(b1, n1, st.keys);
+    buf_str(b1, n1, " T "); buf_int(b1, n1, st.trophies);
     b1[n1] = 0;
     set_color(0xF8FAFCFF);
-    fbw_text(14, 10, b1[0..n1], 3);
+    fbw_text(12, 10, b1[0..n1], 2);
 
+    let pt_sec = (st.play_ms / 1000) as! i32;
+    let pt_min = pt_sec / 60;
+    let pt_rem = pt_sec % 60;
     var b2: u8[160] = [0; 160];
     var n2: i32 = 0;
     buf_str(b2, n2, biome_name(cur_biome()));
-    buf_str(b2, n2, "  LVL "); buf_int(b2, n2, st.depth);
-    buf_str(b2, n2, "  (");
-    buf_int(b2, n2, ffloor(st.px)); buf_str(b2, n2, ",");
-    buf_int(b2, n2, ffloor(st.py)); buf_str(b2, n2, ",");
-    buf_int(b2, n2, ffloor(st.pz)); buf_str(b2, n2, ")");
+    buf_str(b2, n2, " LVL "); buf_int(b2, n2, st.depth);
+    buf_str(b2, n2, " FPS "); buf_int(b2, n2, st.fps);
+    buf_str(b2, n2, " "); buf_pad2(b2, n2, pt_min); buf_str(b2, n2, ":"); buf_pad2(b2, n2, pt_rem);
+    if st.dps_val > 0 { buf_str(b2, n2, " DPS "); buf_int(b2, n2, st.dps_val); }
+    if st.quasar_drive_ms > 0 { buf_str(b2, n2, " [QSR]"); }
+    else if st.black_hole_drive_ms > 0 { buf_str(b2, n2, " [BH-DRV]"); }
     if st.genesis_mode != 0 { buf_str(b2, n2, " [GEN]"); }
     b2[n2] = 0;
     set_color(0x38BDF8FF);
-    fbw_text(14, 38, b2[0..n2], 2);
+    fbw_text(12, 34, b2[0..n2], 2);
 
     // Top-right quick utility buttons: [MAP] [RKT] [TRU] [MRK] [INFO] [MENU]
-    let btn_w = clamp_i(w / 14, 64, 96);
+    let btn_w = clamp_i(w / 15, 56, 86);
     let btn_h = l.top_h - 14;
-    let gap: i32 = 6;
+    let gap: i32 = 5;
     var bx = w - 10 - btn_w;
 
     fbw_box(bx, 7, bx + btn_w, 7 + btn_h, 0x334155EE, 0xFACC15FF);
     set_color(0xFACC15FF);
-    fbw_text(bx + 10, 20, "MENU", 2);
+    fbw_text(bx + 8, 20, "MENU", 2);
     bx = bx - btn_w - gap;
 
     fbw_box(bx, 7, bx + btn_w, 7 + btn_h, 0x1E293BEE, 0x38BDF8FF);
     set_color(0x38BDF8FF);
-    fbw_text(bx + 12, 20, "INFO", 2);
+    fbw_text(bx + 8, 20, "INFO", 2);
     bx = bx - btn_w - gap;
 
     fbw_box(bx, 7, bx + btn_w, 7 + btn_h, 0x1E293BEE, 0x4ADE80FF);
     set_color(0x4ADE80FF);
-    fbw_text(bx + 12, 20, "MRK", 2);
+    fbw_text(bx + 10, 20, "MRK", 2);
     bx = bx - btn_w - gap;
 
     fbw_box(bx, 7, bx + btn_w, 7 + btn_h, if st.true_up != 0 { 0x0E7490EE } else { 0x1E293BEE }, 0x38BDF8FF);
     set_color(0xFFFFFFFF);
-    fbw_text(bx + 12, 20, "TRU", 2);
+    fbw_text(bx + 10, 20, "TRU", 2);
     bx = bx - btn_w - gap;
 
     fbw_box(bx, 7, bx + btn_w, 7 + btn_h, if st.rocket_mode != 0 { 0xB45309EE } else { 0x1E293BEE }, 0xFB923CFF);
     set_color(0xFFFFFFFF);
-    fbw_text(bx + 12, 20, "RKT", 2);
+    fbw_text(bx + 10, 20, "RKT", 2);
     bx = bx - btn_w - gap;
 
     fbw_box(bx, 7, bx + btn_w, 7 + btn_h, if st.show_minimap != 0 { 0x065F46EE } else { 0x1E293BEE }, 0x4ADE80FF);
     set_color(0xFFFFFFFF);
-    fbw_text(bx + 12, 20, "MAP", 2);
+    fbw_text(bx + 10, 20, "MAP", 2);
 
     // Center crosshair
     let cx = w / 2;
     let cy = h / 2;
-    set_color(if st.near_prompt_len > 0 || st.near_ring_kind != ENT_NONE { 0xFACC15FF } else { 0xFFFFFFFF });
+    set_color(if st.target_max_hp > 0 { 0xF87171FF } else if st.near_prompt_len > 0 || st.near_ring_kind != ENT_NONE { 0xFACC15FF } else { 0xFFFFFFFF });
     draw_segment(cx - 12, cy, cx - 4, cy);
     draw_segment(cx + 4, cy, cx + 12, cy);
     draw_segment(cx, cy - 12, cx, cy - 4);
     draw_segment(cx, cy + 4, cx, cy + 12);
 
-    // Proximity prompt or status toast
+    // 3D-Projected Waypoint Compass for Active Marker (or Short Marker slot 0)
+    var mslot = st.active_marker;
+    if mslot < 0 || mslot >= MAX_MARKERS || st.markers[mslot].used == 0 {
+        mslot = if st.markers[0].used != 0 { 0 } else { -1 };
+    }
+    if mslot >= 0 {
+        let mk = &st.markers[mslot];
+        if mk.depth == st.depth {
+            let mdx = mk.px - st.px;
+            let mdy = mk.py - st.py;
+            let mdz = mk.pz - st.pz;
+            let mdist = fsqrt(mdx * mdx + mdy * mdy + mdz * mdz);
+            if mdist > 0.6 {
+                let cp = fcos(st.pitch);
+                let sp = fsin(st.pitch);
+                let cya = fcos(st.yaw);
+                let sya = fsin(st.yaw);
+                let cr = if st.true_up != 0 { 1.0 } else { fcos(st.roll) };
+                let sr = if st.true_up != 0 { 0.0 } else { fsin(st.roll) };
+                let fx = cp * cya;
+                let fy = sp;
+                let fz = cp * sya;
+                let rx0 = -sya;
+                let rz0 = cya;
+                let ux0 = -sp * cya;
+                let uy0 = cp;
+                let uz0 = -sp * sya;
+                let rx = rx0 * cr + ux0 * sr;
+                let ry = uy0 * sr;
+                let rz = rz0 * cr + uz0 * sr;
+                let ux = ux0 * cr - rx0 * sr;
+                let uy = uy0 * cr;
+                let uz = uz0 * cr - rz0 * sr;
+                let cvz = mdx * fx + mdy * fy + mdz * fz;
+                let cvx = mdx * rx + mdy * ry + mdz * rz;
+                let cvy = mdx * ux + mdy * uy + mdz * uz;
+                let aspect = if h > 0 { (w as f64) / (h as f64) } else { 1.777 };
+                var sx_n: f64 = 0.0;
+                var sy_n: f64 = 0.0;
+                if cvz > 0.25 {
+                    sx_n = cvx / (cvz * 0.74 * aspect);
+                    sy_n = cvy / (cvz * 0.74);
+                } else {
+                    let plen = fsqrt(cvx * cvx + cvy * cvy + 0.0001);
+                    sx_n = (cvx / plen) * 1.15;
+                    sy_n = (cvy / plen) * 1.15;
+                }
+                let wx = clamp_i(cx + ((sx_n * ((w / 2) as f64)) as! i32), 28, w - 28);
+                let wy = clamp_i(cy - ((sy_n * ((h / 2) as f64)) as! i32), l.top_h + 44, l.wep_y1 - 24);
+                fbw_box(wx - 7, wy - 7, wx + 7, wy + 7, 0x22C55ECC, 0xFFFFFFFF);
+                var wb: u8[160] = [0; 160];
+                var wn: i32 = 0;
+                buf_str(wb, wn, "MRK "); buf_int(wb, wn, ffloor(mdist)); buf_str(wb, wn, "m");
+                wb[wn] = 0;
+                set_color(0x4ADE80FF);
+                fbw_text(wx + 10, wy - 7, wb[0..wn], 2);
+            }
+        }
+    }
+
+    // Proximity prompt, status toast & crosshair Target HP Bar
+    var banner_y = l.top_h + 8;
     if st.msg_ms > 0 && st.msg_len > 0 {
         let tw = fbw_text_w(st.msg_buf[0..st.msg_len], 2);
         let mx = (w - tw) / 2;
-        fbw_box(mx - 12, l.top_h + 8, mx + tw + 12, l.top_h + 36, 0x0F172AE0, 0xFACC15AA);
+        fbw_box(mx - 12, banner_y, mx + tw + 12, banner_y + 28, 0x0F172AE0, 0xFACC15AA);
         set_color(0xFACC15FF);
-        fbw_text(mx, l.top_h + 14, st.msg_buf[0..st.msg_len], 2);
+        fbw_text(mx, banner_y + 6, st.msg_buf[0..st.msg_len], 2);
+        banner_y = banner_y + 32;
     } else if st.near_prompt_len > 0 {
         let tw = fbw_text_w(st.near_prompt[0..st.near_prompt_len], 2);
         let mx = (w - tw) / 2;
-        fbw_box(mx - 12, l.top_h + 8, mx + tw + 12, l.top_h + 36, 0x0F172AE0, 0x4ADE80AA);
+        fbw_box(mx - 12, banner_y, mx + tw + 12, banner_y + 28, 0x0F172AE0, 0x4ADE80AA);
         set_color(0x4ADE80FF);
-        fbw_text(mx, l.top_h + 14, st.near_prompt[0..st.near_prompt_len], 2);
+        fbw_text(mx, banner_y + 6, st.near_prompt[0..st.near_prompt_len], 2);
+        banner_y = banner_y + 32;
     } else if st.near_ring_kind != ENT_NONE {
         let rmsg = if st.near_ring_kind == ENT_RING_RED { "Tap USE on Red Ring to Grow 16x!" }
                    else if st.near_ring_kind == ENT_RING_PINK { "Tap USE on Pink Ring to Dive 256x!" }
+                   else if st.near_ring_kind == ENT_RING_DANGER { "Tap USE on Danger Rift Ring (256x)!" }
                    else if st.near_ring_kind == ENT_RING_BLUE { "Tap USE on Blue Ring to Teleport!" }
                    else { "Tap USE on Green Ring to Shrink 16x!" };
         let tw = fbw_text_w(rmsg, 2);
         let mx = (w - tw) / 2;
-        fbw_box(mx - 12, l.top_h + 8, mx + tw + 12, l.top_h + 36, 0x0F172AE0, 0x38BDF8AA);
+        fbw_box(mx - 12, banner_y, mx + tw + 12, banner_y + 28, 0x0F172AE0, 0x38BDF8AA);
         set_color(0x38BDF8FF);
-        fbw_text(mx, l.top_h + 14, rmsg, 2);
+        fbw_text(mx, banner_y + 6, rmsg, 2);
+        banner_y = banner_y + 32;
     }
 
-    // Compact corner minimap
+    if st.target_name_len > 0 {
+        let tw = fbw_text_w(st.target_name[0..st.target_name_len], 2);
+        let bw: i32 = if tw > 180 { tw + 24 } else { 204 };
+        let bx1 = cx - bw / 2;
+        let bh: i32 = if st.target_max_hp > 0 { 36 } else { 24 };
+        fbw_box(bx1, banner_y, bx1 + bw, banner_y + bh, 0x0A101CD8, if st.target_max_hp > 0 { 0xF87171CC } else { 0x94A3B8AA });
+        set_color(if st.target_max_hp > 0 { 0xFCA5A5FF } else { 0xE2E8F0FF });
+        fbw_text(cx - tw / 2, banner_y + 4, st.target_name[0..st.target_name_len], 2);
+        if st.target_max_hp > 0 {
+            let bar_w = bw - 20;
+            let fill_w = clamp_i((bar_w * st.target_hp) / st.target_max_hp, 0, bar_w);
+            fbw_box(bx1 + 10, banner_y + 22, bx1 + 10 + bar_w, banner_y + 31, 0x1E293BFF, 0x64748BFF);
+            if fill_w > 2 {
+                set_color(0xEF4444FF);
+                draw_rect(bx1 + 11, banner_y + 23, bx1 + 9 + fill_w, banner_y + 30);
+            }
+        }
+    }
+
+    // Compact corner minimap (with cross-neighbor seam sampling!)
     if st.show_minimap != 0 && w >= 600 {
         let cell: i32 = 6;
         let ms: i32 = 16 * cell;
-        let mx = w - ms - 18;
+        let mx = w - ms - 22;
         let my = l.top_h + 12;
         fbw_box(mx - 4, my - 4, mx + ms + 4, my + ms + 4, 0x080C18D8, 0x38BDF8AA);
-        let py_i = clamp_i(ffloor(st.py), 1, 14);
+        let py_i = clamp_i(ffloor(st.py), 0, 15);
         var z: i32 = 0;
         while z < 16 {
             var x: i32 = 0;
             while x < 16 {
-                let blk = get_block(x, py_i, z);
+                let blk = world_block_rel(x, py_i, z);
                 if blk != BLK_AIR {
                     set_color(if is_block_shrinkable(blk) != 0 { 0x38BDF8FF } else { 0x64748BFF });
                     draw_rect(mx + x * cell, my + z * cell, mx + (x + 1) * cell, my + (z + 1) * cell);
@@ -1269,8 +1418,46 @@ fn draw_mobile_hud(w: i32, h: i32) {
         draw_rect(mx + px_i * cell, my + pz_i * cell, mx + (px_i + 1) * cell, my + (pz_i + 1) * cell);
     }
 
-    // Bottom 10-weapon touch strip
-    let slot_w = (w - 28) / NUM_WEAPONS;
+    // Right-edge Steam-style vertical elevation bar (y / 16 + active marker height)
+    let ev_y1 = l.top_h + 116;
+    let ev_y2 = l.wep_y1 - 16;
+    if ev_y2 - ev_y1 >= 48 {
+        let ev_x1 = w - 14;
+        let ev_x2 = w - 6;
+        fbw_box(ev_x1, ev_y1, ev_x2, ev_y2, 0x0F172AC0, 0xFACC15AA);
+        let yn = fclamp(st.py / 16.0, 0.0, 1.0);
+        let py_px = ev_y2 - ((yn * ((ev_y2 - ev_y1 - 6) as f64)) as! i32) - 3;
+        set_color(0xFACC15FF);
+        draw_rect(ev_x1 + 1, py_px - 3, ev_x2 - 1, py_px + 3);
+        if mslot >= 0 && st.markers[mslot].depth == st.depth {
+            let myn = fclamp(st.markers[mslot].py / 16.0, 0.0, 1.0);
+            let my_px = ev_y2 - ((myn * ((ev_y2 - ev_y1 - 4) as f64)) as! i32) - 2;
+            set_color(0x4ADE80FF);
+            draw_rect(ev_x1 + 1, my_px - 2, ev_x2 - 1, my_px + 2);
+        }
+    }
+
+    // Active Weapon Mode label pill directly above weapon bar center
+    let wmode_lbl = weapon_mode_name(st.weapon, st.wep_mode[st.weapon]);
+    if wmode_lbl.len > 0 {
+        var mb: u8[160] = [0; 160];
+        var ml: i32 = 0;
+        buf_str(mb, ml, weapon_name(st.weapon));
+        buf_str(mb, ml, " [");
+        buf_str(mb, ml, wmode_lbl);
+        buf_str(mb, ml, "]");
+        mb[ml] = 0;
+        let mtw = fbw_text_w(mb[0..ml], 2);
+        let mx0 = cx - mtw / 2;
+        fbw_box(mx0 - 10, l.wep_y1 - 24, mx0 + mtw + 10, l.wep_y1 - 3, 0x0B1220D8, 0x38BDF8AA);
+        set_color(0x38BDF8FF);
+        fbw_text(mx0, l.wep_y1 - 21, mb[0..ml], 2);
+    }
+
+    // Bottom 10-weapon touch strip + right-side [MOD] mode cycle button
+    let mod_w = clamp_i(w / 14, 62, 86);
+    let wep_area_w = w - 34 - mod_w;
+    let slot_w = wep_area_w / NUM_WEAPONS;
     var wi: i32 = 0;
     while wi < NUM_WEAPONS {
         let sx1 = 14 + wi * slot_w;
@@ -1281,7 +1468,7 @@ fn draw_mobile_hud(w: i32, h: i32) {
         let bd: u32 = if active { 0xFACC15FF } else if unlocked { 0x475569FF } else { 0x1E293BFF };
         fbw_box(sx1, l.wep_y1, sx2, l.wep_y2, bg, bd);
         set_color(if unlocked { 0xF8FAFCFF } else { 0x64748BFF });
-        fbw_text(sx1 + 6, l.wep_y1 + 8, wep_tag(wi, st.quasar_drive), 2);
+        fbw_text(sx1 + 4, l.wep_y1 + 6, wep_tag(wi, st.quasar_drive), 2);
         if unlocked {
             var ab: u8[160] = [0; 160];
             var al: i32 = 0;
@@ -1292,10 +1479,15 @@ fn draw_mobile_hud(w: i32, h: i32) {
             }
             ab[al] = 0;
             set_color(if active { 0xFDE047FF } else { 0x94A3B8FF });
-            fbw_text(sx1 + 6, l.wep_y1 + 28, ab[0..al], 2);
+            fbw_text(sx1 + 4, l.wep_y1 + 26, ab[0..al], 2);
         }
         wi = wi + 1;
     }
+    let mod_x1 = 14 + NUM_WEAPONS * slot_w + 2;
+    let mod_x2 = w - 14;
+    fbw_box(mod_x1, l.wep_y1, mod_x2, l.wep_y2, 0x0F766EEE, 0x22D3EEFF);
+    set_color(0xFFFFFFFF);
+    fbw_text(mod_x1 + 8, l.wep_y1 + 14, "MOD", 2);
 }
 
 fn draw_pad_btn(x1: i32, y1: i32, x2: i32, y2: i32, label: const u8[:], fill: u32, border: u32) {
@@ -1362,13 +1554,15 @@ fn draw_mobile_modal(w: i32, h: i32) {
 
     if st.screen == SCREEN_BUY {
         set_color(0x4ADE80FF);
-        fbw_text(mx + 22, my + 16, "BUY STATION - TAP ITEM TO PURCHASE", 3);
-        draw_modal_row(mx, my + 56,  mw, "[1] +50 Health (15g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 108, mw, "[2] +50 Armor (20g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 160, mw, "[3] Cannon + Laser + Minigun (25g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 212, mw, "[4] Rocket + Homing + Rail + EMP (40g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 264, mw, "[5] Nuke + Dark Hole (60g)", 0x1E293BFF, 0xFACC15FF);
-        draw_modal_row(mx, my + 316, mw, "[6] +1 Vault Key (50g)", 0x1E293BFF, 0xFACC15FF);
+        fbw_text(mx + 22, my + 14, "BUY STATION - TAP ITEM TO PURCHASE", 3);
+        draw_modal_row_h(mx, my + 48,  mw, 34, "[1] +50 Health (15g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 86,  mw, 34, "[2] +50 Armor (20g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 124, mw, 34, "[3] Cannon + Laser + Minigun (25g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 162, mw, 34, "[4] Rocket + Homing + Rail + EMP (40g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 200, mw, 34, "[5] Nuke + Dark Hole (60g)", 0x1E293BFF, 0xFACC15FF);
+        draw_modal_row_h(mx, my + 238, mw, 34, "[6] +1 Vault Key (50g)", 0x1E293BFF, 0xFACC15FF);
+        draw_modal_row_h(mx, my + 276, mw, 34, "[7] +50 Shields (15g)", 0x1E293BFF, 0x38BDF8FF);
+        draw_modal_row_h(mx, my + 314, mw, 34, "[8] Capacitor +35% Max Ammo (35g)", 0x1E293BFF, 0x4ADE80FF);
         draw_modal_row(mx, my + mh - 60, mw, "CLOSE STATION", 0x334155FF, 0x38BDF8FF);
     } else if st.screen == SCREEN_SELL {
         set_color(0xFACC15FF);
@@ -1388,12 +1582,13 @@ fn draw_mobile_modal(w: i32, h: i32) {
         draw_modal_row(mx, my + mh - 60, mw, "CLOSE BLACK MARKET", 0x334155FF, 0x38BDF8FF);
     } else if st.screen == SCREEN_TOME {
         set_color(0x38BDF8FF);
-        fbw_text(mx + 22, my + 16, "XAR LORE TOME", 3);
+        fbw_text(mx + 22, my + 16, tome_title(st.tome_id), 3);
         set_color(0xF8FAFCFF);
-        fbw_text(mx + 22, my + 72, "Every block contains a 16x16x16 universe.", 2);
-        fbw_text(mx + 22, my + 104, "Tap SHRK or fly into portals / green rings.", 2);
-        fbw_text(mx + 22, my + 136, "Use GROW or red rings to climb outward scales.", 2);
-        fbw_text(mx + 22, my + 168, "Descend into Core Gates to rescue Friend K!", 2);
+        fbw_text(mx + 22, my + 72, tome_body_line(st.tome_id, 0), 2);
+        fbw_text(mx + 22, my + 106, tome_body_line(st.tome_id, 1), 2);
+        fbw_text(mx + 22, my + 140, tome_body_line(st.tome_id, 2), 2);
+        set_color(0xFACC15FF);
+        fbw_text(mx + 22, my + 174, tome_body_line(st.tome_id, 3), 2);
         draw_modal_row(mx, my + mh - 60, mw, "RESUME EXPLORATION", 0x1E3A8AFF, 0xFFFFFFFF);
     } else if st.screen == SCREEN_VICTORY {
         set_color(0xFACC15FF);
@@ -1403,27 +1598,134 @@ fn draw_mobile_modal(w: i32, h: i32) {
         draw_modal_row(mx, my + 140, mw, "KEEP EXPLORING XAR", 0x065F46FF, 0xFFFFFFFF);
         draw_modal_row(mx, my + 200, mw, "START NEW RUN", 0x1E3A8AFF, 0xFFFFFFFF);
         draw_modal_row(mx, my + 260, mw, "EXIT TO CALCULATOR", 0x7F1D1DFF, 0xFFFFFFFF);
-    } else if st.screen == SCREEN_INFO_F1 || st.screen == SCREEN_INFO_F4 {
-        set_color(0x38BDF8FF);
-        fbw_text(mx + 22, my + 16, "MARKERS & XAR COMPENDIUM (TAP MARKER TO WARP)", 2);
-        var i: i32 = 0;
-        while i < 5 {
-            var mb: u8[160] = [0; 160];
-            var ml: i32 = 0;
-            buf_str(mb, ml, if i == 0 { "Short: " } else { "Long " });
-            if i > 0 { buf_int(mb, ml, i); buf_str(mb, ml, ": "); }
-            if st.markers[i].used != 0 {
-                buf_str(mb, ml, "LVL "); buf_int(mb, ml, st.markers[i].depth);
-                buf_str(mb, ml, " "); buf_str(mb, ml, biome_name(st.markers[i].biome));
-            } else {
-                buf_str(mb, ml, if i == 0 { "(Empty - tap MRK in HUD)" } else { "(Empty Long Marker)" });
-            }
-            mb[ml] = 0;
-            draw_modal_row(mx, my + 52 + i * 50, mw, mb[0..ml], 0x1E293BFF, if st.markers[i].used != 0 { 0x4ADE80FF } else { 0x94A3B8FF });
-            i = i + 1;
+    } else if st.screen >= SCREEN_INFO_F1 && st.screen <= SCREEN_INFO_F5 {
+        // 5-Tab Xar Compendium Header: [F1 HELP] [F2 WEPS] [F3 MOBS] [F4 MRKS] [F5 LORE]
+        let tw = (mw - 48) / 5;
+        let t_lbls: const u8[:][5] = ["F1 HELP", "F2 WEPS", "F3 MOBS", "F4 MRKS", "F5 LORE"];
+        var ti: i32 = 0;
+        while ti < 5 {
+            let tx1 = mx + 14 + ti * (tw + 5);
+            let active = (st.screen == (SCREEN_INFO_F1 + ti));
+            fbw_box(tx1, my + 10, tx1 + tw, my + 42, if active { 0x1D4ED8FF } else { 0x1E293BFF }, if active { 0xFACC15FF } else { 0x475569FF });
+            set_color(if active { 0xFACC15FF } else { 0xCBD5E1FF });
+            fbw_text(tx1 + 10, my + 18, t_lbls[ti], 2);
+            ti = ti + 1;
         }
-        draw_modal_row(mx, my + mh - 114, mw, "+ DROP LONG TRACKING MARKER", 0x14532DFF, 0x4ADE80FF);
-        draw_modal_row(mx, my + mh - 60, mw, "CLOSE GUIDE", 0x334155FF, 0xFFFFFFFF);
+
+        if st.screen == SCREEN_INFO_F1 {
+            set_color(0x38BDF8FF);
+            fbw_text(mx + 22, my + 56, "FRACTAL BLOCK WORLD (XAR) - SURVIVAL GUIDE", 2);
+            set_color(0xF8FAFCFF);
+            fbw_text(mx + 22, my + 88, "1. Every block contains a 16x16x16 universe inside.", 2);
+            fbw_text(mx + 22, my + 116, "2. Tap SHRK or fly into Green/Pink rings to dive 16x/256x.", 2);
+            fbw_text(mx + 22, my + 144, "3. Tap GROW or Red rings / fly out bounds to grow 16x.", 2);
+            fbw_text(mx + 22, my + 172, "4. Short Marker [MRK] costs 5g past LVL 0; Plasma clears it.", 2);
+            fbw_text(mx + 22, my + 200, "5. Tap [MOD] or active weapon slot to switch firing modes.", 2);
+            fbw_text(mx + 22, my + 228, "6. Defeat The Singularity Boss in Inner Core to free 'K'!", 2);
+        } else if st.screen == SCREEN_INFO_F2 {
+            set_color(0x38BDF8FF);
+            fbw_text(mx + 22, my + 54, "ARSENAL (TAP TO EQUIP / CYCLE FIRING MODE)", 2);
+            var wi: i32 = 0;
+            while wi < 10 {
+                let col_i = wi / 5;
+                let row_i = wi % 5;
+                let rx1 = mx + 18 + col_i * ((mw - 42) / 2 + 6);
+                let rw = (mw - 42) / 2;
+                let ry1 = my + 80 + row_i * 38;
+                let unl = st.wep_unlocked[wi] != 0;
+                let eq = wi == st.weapon;
+                fbw_box(rx1, ry1, rx1 + rw, ry1 + 32, if eq { 0x1E3A8AFF } else { 0x1E293BFF }, if eq { 0xFACC15FF } else { 0x475569FF });
+                var wb: u8[160] = [0; 160];
+                var wn: i32 = 0;
+                buf_str(wb, wn, weapon_name(wi));
+                buf_str(wb, wn, " ");
+                if unl {
+                    if st.max_ammo[wi] > 9000 { buf_str(wb, wn, "INF"); }
+                    else { buf_int(wb, wn, st.ammo[wi]); buf_str(wb, wn, "/"); buf_int(wb, wn, st.max_ammo[wi]); }
+                    buf_str(wb, wn, " ");
+                    buf_str(wb, wn, weapon_mode_name(wi, st.wep_mode[wi]));
+                } else {
+                    buf_str(wb, wn, "[LOCKED]");
+                }
+                wb[wn] = 0;
+                set_color(if unl { 0xF8FAFCFF } else { 0x64748BFF });
+                fbw_text(rx1 + 8, ry1 + 8, wb[0..wn], 2);
+                wi = wi + 1;
+            }
+        } else if st.screen == SCREEN_INFO_F3 {
+            set_color(0xFACC15FF);
+            var sb: u8[160] = [0; 160];
+            var sn: i32 = 0;
+            buf_str(sb, sn, "PROGRESS: KILLS "); buf_int(sb, sn, st.kills);
+            buf_str(sb, sn, "  XP "); buf_int(sb, sn, st.score_xp);
+            buf_str(sb, sn, "  TROPHIES "); buf_int(sb, sn, st.trophies);
+            buf_str(sb, sn, "/7  DEATHS "); buf_int(sb, sn, st.deaths);
+            sb[sn] = 0;
+            fbw_text(mx + 22, my + 56, sb[0..sn], 2);
+            set_color(0x38BDF8FF);
+            fbw_text(mx + 22, my + 86, if st.singularity_defeated != 0 { "SINGULARITY: DEFEATED (Quasar Drive Active!)" } else { "SINGULARITY: ACTIVE IN INNER CORE" }, 2);
+            set_color(0xE2E8F0FF);
+            fbw_text(mx + 22, my + 118, "MONSTER MANUAL:", 2);
+            fbw_text(mx + 22, my + 144, "- Space Rat / Void Spider / Ying Goon: Swarm scouts", 2);
+            fbw_text(mx + 22, my + 170, "- Slime Marine / Space Pirate / Menace Cube: Ranged", 2);
+            fbw_text(mx + 22, my + 196, "- Pool Ball Guardian: Stun via Laser Cold Beam / EMP", 2);
+            fbw_text(mx + 22, my + 222, "- Core Demon & Singularity: High HP, drops Trophies", 2);
+        } else if st.screen == SCREEN_INFO_F4 {
+            let page = clamp_i(g_mob.info_marker_page, 0, 2);
+            let base = page * 5;
+            var i: i32 = 0;
+            while i < 5 {
+                let slot = base + i;
+                var mb: u8[160] = [0; 160];
+                var ml: i32 = 0;
+                buf_str(mb, ml, if slot == 0 { "Short: " } else { "Long " });
+                if slot > 0 { buf_int(mb, ml, slot); buf_str(mb, ml, ": "); }
+                if st.markers[slot].used != 0 {
+                    buf_str(mb, ml, "LVL "); buf_int(mb, ml, st.markers[slot].depth);
+                    buf_str(mb, ml, " "); buf_str(mb, ml, biome_name(st.markers[slot].biome));
+                } else {
+                    buf_str(mb, ml, if slot == 0 { "(Empty - tap MRK in HUD)" } else { "(Empty Long Marker)" });
+                }
+                mb[ml] = 0;
+                draw_modal_row_h(mx, my + 52 + i * 38, mw, 34, mb[0..ml], 0x1E293BFF, if st.markers[slot].used != 0 { 0x4ADE80FF } else { 0x94A3B8FF });
+                i = i + 1;
+            }
+            var pb: u8[160] = [0; 160];
+            var pl: i32 = 0;
+            buf_str(pb, pl, "NEXT PAGE ("); buf_int(pb, pl, page + 1); buf_str(pb, pl, "/3)");
+            pb[pl] = 0;
+            let hw = (mw - 42) / 2;
+            fbw_box(mx + 18, my + mh - 108, mx + 18 + hw, my + mh - 68, 0x14532DFF, 0x4ADE80FF);
+            set_color(0x4ADE80FF);
+            fbw_text(mx + 26, my + mh - 96, "+ DROP LONG MARKER", 2);
+            fbw_box(mx + 24 + hw, my + mh - 108, mx + mw - 18, my + mh - 68, 0x1E293BFF, 0x38BDF8FF);
+            set_color(0x38BDF8FF);
+            fbw_text(mx + 34 + hw, my + mh - 96, pb[0..pl], 2);
+        } else {
+            let cb = cur_biome();
+            set_color(0x38BDF8FF);
+            fbw_text(mx + 22, my + 56, tome_title(cb), 2);
+            set_color(0xF8FAFCFF);
+            fbw_text(mx + 22, my + 90, tome_body_line(cb, 0), 2);
+            fbw_text(mx + 22, my + 120, tome_body_line(cb, 1), 2);
+            fbw_text(mx + 22, my + 150, tome_body_line(cb, 2), 2);
+            set_color(0xFACC15FF);
+            fbw_text(mx + 22, my + 180, tome_body_line(cb, 3), 2);
+            var tb: u8[160] = [0; 160];
+            var tn: i32 = 0;
+            var read_cnt: i32 = 0;
+            var bi: i32 = 0;
+            while bi < 10 {
+                if (st.tome_read_mask & (1 << bi)) != 0 { read_cnt = read_cnt + 1; }
+                bi = bi + 1;
+            }
+            buf_str(tb, tn, "Tomes Discovered: "); buf_int(tb, tn, read_cnt); buf_str(tb, tn, "/9  (Max Depth: ");
+            buf_int(tb, tn, st.max_depth_reached); buf_str(tb, tn, ")");
+            tb[tn] = 0;
+            set_color(0x4ADE80FF);
+            fbw_text(mx + 22, my + 220, tb[0..tn], 2);
+        }
+        draw_modal_row(mx, my + mh - 60, mw, "CLOSE COMPENDIUM", 0x334155FF, 0xFFFFFFFF);
     } else {
         set_color(0x38BDF8FF);
         fbw_text(mx + 22, my + 14, "FRACTAL BLOCK WORLD - PAUSED", 3);
@@ -1479,11 +1781,11 @@ fn handle_modal_tap(x: i32, y: i32) {
 
     if st.screen == SCREEN_BUY {
         var r: i32 = 0;
-        while r < 6 {
-            let ry = my + 56 + r * 52;
-            if y >= ry && y <= ry + 46 {
+        while r < 8 {
+            let ry = my + 48 + r * 38;
+            if y >= ry && y <= ry + 34 {
                 handle_buy_action(r + 1);
-                fbw_sound_fx(5);
+                drain_pending_sfx();
                 return;
             }
             r = r + 1;
@@ -1494,7 +1796,7 @@ fn handle_modal_tap(x: i32, y: i32) {
             let ry = my + 64 + r * 56;
             if y >= ry && y <= ry + 46 {
                 handle_sell_action(r + 1);
-                fbw_sound_fx(5);
+                drain_pending_sfx();
                 return;
             }
             r = r + 1;
@@ -1505,29 +1807,71 @@ fn handle_modal_tap(x: i32, y: i32) {
             let ry = my + 64 + r * 56;
             if y >= ry && y <= ry + 46 {
                 handle_black_market_action(r + 1);
-                fbw_sound_fx(5);
+                drain_pending_sfx();
                 return;
             }
             r = r + 1;
         }
-    } else if st.screen == SCREEN_INFO_F1 || st.screen == SCREEN_INFO_F4 {
-        if y >= my + mh - 114 && y <= my + mh - 68 {
-            drop_marker(1);
-            fbw_sound_fx(5);
-            return;
+    } else if st.screen >= SCREEN_INFO_F1 && st.screen <= SCREEN_INFO_F5 {
+        if y >= my + 10 && y <= my + 42 {
+            let tw = (mw - 48) / 5;
+            var ti: i32 = 0;
+            while ti < 5 {
+                let tx1 = mx + 14 + ti * (tw + 5);
+                if x >= tx1 && x <= tx1 + tw {
+                    st.screen = SCREEN_INFO_F1 + ti;
+                    fbw_sound_fx(SFX_CLICK);
+                    return;
+                }
+                ti = ti + 1;
+            }
         }
-        var i: i32 = 0;
-        while i < 5 {
-            let ry = my + 52 + i * 50;
-            if y >= ry && y <= ry + 46 {
-                if warp_to_marker(i) != 0 {
-                    st.screen = SCREEN_PLAY;
-                    g_mob.sync_force = 1;
-                    fbw_sound_fx(4);
+        if st.screen == SCREEN_INFO_F2 {
+            let rw = (mw - 42) / 2;
+            var wi: i32 = 0;
+            while wi < 10 {
+                let col_i = wi / 5;
+                let row_i = wi % 5;
+                let rx1 = mx + 18 + col_i * (rw + 6);
+                let ry1 = my + 80 + row_i * 38;
+                if x >= rx1 && x <= rx1 + rw && y >= ry1 && y <= ry1 + 32 {
+                    if st.wep_unlocked[wi] != 0 {
+                        if st.weapon == wi { cycle_weapon_mode(); }
+                        else { st.weapon = wi; fbw_sound_fx(SFX_CLICK); }
+                    } else {
+                        set_status_msg("Weapon locked! Find Weapon Module or Buy Station.", 1400);
+                    }
+                    drain_pending_sfx();
+                    return;
+                }
+                wi = wi + 1;
+            }
+        } else if st.screen == SCREEN_INFO_F4 {
+            if y >= my + mh - 108 && y <= my + mh - 68 {
+                let hw = (mw - 42) / 2;
+                if x <= mx + 18 + hw {
+                    drop_marker(1);
+                    drain_pending_sfx();
+                } else {
+                    g_mob.info_marker_page = (g_mob.info_marker_page + 1) % 3;
+                    fbw_sound_fx(SFX_CLICK);
                 }
                 return;
             }
-            i = i + 1;
+            let base = clamp_i(g_mob.info_marker_page, 0, 2) * 5;
+            var i: i32 = 0;
+            while i < 5 {
+                let ry = my + 52 + i * 38;
+                if y >= ry && y <= ry + 34 {
+                    if warp_to_marker(base + i) != 0 {
+                        st.screen = SCREEN_PLAY;
+                        g_mob.sync_force = 1;
+                        drain_pending_sfx();
+                    }
+                    return;
+                }
+                i = i + 1;
+            }
         }
     } else if st.screen == SCREEN_VICTORY {
         if y >= my + 140 && y <= my + 186 { st.screen = SCREEN_PLAY; return; }
@@ -1626,8 +1970,8 @@ fn handle_top_bar_tap(x: i32, y: i32) -> bool {
     let l = &g_mob.lay;
     if y > l.top_h { return false; }
 
-    let btn_w = clamp_i(l.w / 14, 64, 96);
-    let gap: i32 = 6;
+    let btn_w = clamp_i(l.w / 15, 56, 86);
+    let gap: i32 = 5;
     var bx = l.w - 10 - btn_w;
 
     if x >= bx && x <= bx + btn_w {
@@ -1636,13 +1980,13 @@ fn handle_top_bar_tap(x: i32, y: i32) -> bool {
     }
     bx = bx - btn_w - gap;
     if x >= bx && x <= bx + btn_w {
-        st.screen = if st.screen == SCREEN_INFO_F4 { SCREEN_PLAY } else { SCREEN_INFO_F4 };
+        st.screen = if st.screen >= SCREEN_INFO_F1 && st.screen <= SCREEN_INFO_F5 { SCREEN_PLAY } else { SCREEN_INFO_F4 };
         return true;
     }
     bx = bx - btn_w - gap;
     if x >= bx && x <= bx + btn_w {
         drop_marker(0);
-        fbw_sound_fx(5);
+        drain_pending_sfx();
         return true;
     }
     bx = bx - btn_w - gap;
@@ -1677,24 +2021,36 @@ fn fbw_mobile_pointer(x: i32, y: i32, pid_in: i32, ev_type: i32) {
             g_mob.ptrs[pid].cur_x = x;
             g_mob.ptrs[pid].cur_y = y;
             handle_modal_tap(x, y);
+            drain_pending_sfx();
             return;
         }
         if handle_top_bar_tap(x, y) {
+            drain_pending_sfx();
             return;
         }
 
-        // Bottom 10-weapon strip tap (respect unlock state)
+        // Bottom 10-weapon strip + [MOD] mode button tap
         if y >= l.wep_y1 && y <= l.wep_y2 {
-            let slot_w = (l.w - 28) / NUM_WEAPONS;
-            if slot_w > 0 {
+            let mod_w = clamp_i(l.w / 14, 62, 86);
+            let wep_area_w = l.w - 34 - mod_w;
+            let slot_w = wep_area_w / NUM_WEAPONS;
+            let mod_x1 = 14 + NUM_WEAPONS * slot_w + 2;
+            if x >= mod_x1 {
+                cycle_weapon_mode();
+            } else if slot_w > 0 {
                 let wi = clamp_i((x - 14) / slot_w, 0, NUM_WEAPONS - 1);
                 if st.wep_unlocked[wi] != 0 {
-                    st.weapon = wi;
-                    fbw_sound_fx(0);
+                    if st.weapon == wi {
+                        cycle_weapon_mode();
+                    } else {
+                        st.weapon = wi;
+                        fbw_sound_fx(SFX_CLICK);
+                    }
                 } else {
                     set_status_msg("Weapon locked! Find Weapon Module or Buy Station.", 1400);
                 }
             }
+            drain_pending_sfx();
             return;
         }
 
@@ -1702,30 +2058,24 @@ fn fbw_mobile_pointer(x: i32, y: i32, pid_in: i32, ev_type: i32) {
         if in_box(x, y, l.fire_x1, l.fire_y1, l.fire_x2, l.fire_y2) {
             role = ACT_FIRE;
             fire_weapon(0);
-            fbw_sound_fx(if st.weapon == WEP_LASER || st.weapon == WEP_RAILGUN { 2 } else { 1 });
         } else if in_box(x, y, l.alt_x1, l.alt_y1, l.alt_x2, l.alt_y2) {
             role = ACT_ALT;
             fire_weapon(1);
-            fbw_sound_fx(2);
         } else if in_box(x, y, l.use_x1, l.use_y1, l.use_x2, l.use_y2) {
             role = ACT_USE;
             use_nearest();
-            fbw_sound_fx(4);
             g_mob.sync_force = 1;
         } else if in_box(x, y, l.shk_x1, l.shk_y1, l.shk_x2, l.shk_y2) {
             role = ACT_SHRINK;
             shrink_targeted_block();
-            fbw_sound_fx(4);
             g_mob.sync_force = 1;
         } else if in_box(x, y, l.grw_x1, l.grw_y1, l.grw_x2, l.grw_y2) {
             role = ACT_GROW;
             grow_in_place();
-            fbw_sound_fx(4);
             g_mob.sync_force = 1;
         } else if in_box(x, y, l.tk_x1, l.tk_y1, l.tk_x2, l.tk_y2) {
             role = ACT_TK;
             trigger_telekinesis();
-            fbw_sound_fx(5);
         } else if in_box(x, y, l.up_x1, l.up_y1, l.up_x2, l.up_y2) {
             role = ACT_UP;
         } else if in_box(x, y, l.dn_x1, l.dn_y1, l.dn_x2, l.dn_y2) {
@@ -1752,6 +2102,7 @@ fn fbw_mobile_pointer(x: i32, y: i32, pid_in: i32, ev_type: i32) {
         g_mob.ptrs[pid].cur_y = y;
         g_mob.ptrs[pid].last_x = x;
         g_mob.ptrs[pid].last_y = y;
+        drain_pending_sfx();
         recompute_held_flags();
     } else if ev_type == PTR_MOVE {
         if g_mob.ptrs[pid].active == 0 { return; }

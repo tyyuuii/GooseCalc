@@ -14,6 +14,8 @@ extern fn fbw_gl_set_camera(px_mm: i32, py_mm: i32, pz_mm: i32,
 
 extern fn fbw_gl_set_parent_meta(layer: i32, valid: i32, bx: i32, by: i32, bz: i32, biome: i32);
 extern fn fbw_gl_push_chunk_quad(layer: i32, qidx: i32, packed4: i32);
+extern fn fbw_gl_set_neighbor_meta(nb: i32, valid: i32, dx: i32, dy: i32, dz: i32, biome: i32);
+extern fn fbw_gl_push_neighbor_quad(nb: i32, qidx: i32, packed4: i32);
 extern fn fbw_gl_mark_chunks_dirty();
 
 extern fn fbw_gl_set_inward_meta(slot: i32, valid: i32, bx: i32, by: i32, bz: i32, biome: i32);

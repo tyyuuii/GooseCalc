@@ -30,6 +30,9 @@
 #define BLK_SPAWNER       16
 #define BLK_LOCKED_DOOR   17
 
+#define BLK_MYSTERY_Q     18
+#define BLK_HAZARD_NUKE   19
+
 #define BLK_BLACK_CUBE    20
 #define BLK_WHITE_FLOWER  21
 #define BLK_ALPHA_CUBE    22
@@ -39,6 +42,9 @@
 #define BLK_ICE_WORLD     26
 #define BLK_DESERT_WORLD  27
 #define BLK_CORE_GATE     28
+#define BLK_TOPAZ_CHECK   29
+#define BLK_INFINITY_RED  30
+#define BLK_TEXT_BLOCK    31
 
 #define BLK_BUY_STATION   32
 #define BLK_SELL_STATION  33
@@ -75,15 +81,19 @@
 #define ENT_AMMO          18
 #define ENT_KEY           19
 #define ENT_FRIEND_K      20
+#define ENT_RING_DANGER   21
+#define ENT_MARKER_BEACON 22
 
 #define CHUNK_DIM         16
 #define CHUNK_VOL         4096
 #define MAX_LAYERS        6
 #define MAX_PARENTS       5
+#define MAX_NEIGHBORS     10
 #define MAX_INWARD_SLOTS    256
 #define MAX_L1_INWARD_SLOTS 64
 #define MAX_BAND1_INIT      131072
 #define MAX_BAND1_HARD_CAP  4194304
+#define MAX_SLOT_SCRATCH    65536
 #define MAX_BAND2_VERTS   65536
 #define MAX_BAND3_VERTS   65536
 #define MAX_DYN_VERTS     32768
@@ -108,35 +118,51 @@ typedef struct {
     uint32_t rgb;
 } FbwPt;
 
-// Chunk + 5-parent layer storage
+// Chunk + 5-parent layer + 10-neighbor storage
 static uint8_t g_chunks[MAX_LAYERS][CHUNK_VOL];
 static int g_parent_valid[MAX_PARENTS] = {0, 0, 0, 0, 0};
 static int g_parent_bx[MAX_PARENTS] = {0, 0, 0, 0, 0};
 static int g_parent_by[MAX_PARENTS] = {0, 0, 0, 0, 0};
 static int g_parent_bz[MAX_PARENTS] = {0, 0, 0, 0, 0};
 static int g_parent_biome[MAX_PARENTS] = {0, 0, 0, 0, 0};
+
+static uint8_t g_neighbors[MAX_NEIGHBORS][CHUNK_VOL];
+static int g_neighbor_valid[MAX_NEIGHBORS] = {0};
+static int g_neighbor_dx[MAX_NEIGHBORS] = {0};
+static int g_neighbor_dy[MAX_NEIGHBORS] = {0};
+static int g_neighbor_dz[MAX_NEIGHBORS] = {0};
+static int g_neighbor_biome[MAX_NEIGHBORS] = {0};
 static int g_chunks_dirty = 1;
 
-// Inward 1/16x LOD slots
+// Inward 1/16x LOD slots + incremental per-slot VBO cache
 static uint8_t g_inward[MAX_INWARD_SLOTS][CHUNK_VOL];
 static int g_inward_valid[MAX_INWARD_SLOTS];
 static int g_inward_bx[MAX_INWARD_SLOTS];
 static int g_inward_by[MAX_INWARD_SLOTS];
 static int g_inward_bz[MAX_INWARD_SLOTS];
 static int g_inward_biome[MAX_INWARD_SLOTS];
-static int g_inward_grid[CHUNK_VOL]; // -1 or slot index for O(1) lookup during Layer 0 meshing
+static int g_inward_grid[CHUNK_VOL];
+static GLuint g_inw_vbos[MAX_INWARD_SLOTS];
+static int g_inw_vcnt[MAX_INWARD_SLOTS];
+static uint8_t g_inw_vbo_dirty[MAX_INWARD_SLOTS];
+
 static uint8_t g_l1_inward[MAX_L1_INWARD_SLOTS][CHUNK_VOL];
 static int g_l1_inward_valid[MAX_L1_INWARD_SLOTS];
 static int g_l1_inward_bx[MAX_L1_INWARD_SLOTS];
 static int g_l1_inward_by[MAX_L1_INWARD_SLOTS];
 static int g_l1_inward_bz[MAX_L1_INWARD_SLOTS];
 static int g_l1_inward_biome[MAX_L1_INWARD_SLOTS];
-static int g_l1_inward_grid[CHUNK_VOL]; // -1 or slot index for Layer 1 (16x -> 1x) meshing
+static int g_l1_inward_grid[CHUNK_VOL];
+static GLuint g_l1_inw_vbos[MAX_L1_INWARD_SLOTS];
+static int g_l1_inw_vcnt[MAX_L1_INWARD_SLOTS];
+static uint8_t g_l1_inw_vbo_dirty[MAX_L1_INWARD_SLOTS];
+
 static int g_inward_tier[MAX_INWARD_SLOTS];
 static int g_l1_inward_tier[MAX_L1_INWARD_SLOTS];
 static int g_disable_lod = 0;
 static int g_lod_dist_level = 4;
 static int g_inward_dirty = 1;
+static int g_shell_dirty = 1;
 
 static int g_vp_w = 1280, g_vp_h = 720;
 static int g_depth = 0, g_biome = 1;
@@ -158,6 +184,8 @@ static uint32_t g_beam_rgb = 0;
 static FbwVert *g_band1_verts = NULL;
 static int g_band1_cap = 0;
 static int g_band1_cnt = 0;
+static FbwVert *g_slot_verts = NULL;
+static int g_slot_cap = 0;
 static FbwVert g_band2_verts[MAX_BAND2_VERTS];
 static int g_band2_cnt = 0;
 static FbwVert g_band3_verts[MAX_BAND3_VERTS];
@@ -176,44 +204,53 @@ static GLuint g_vbo_dyn = 0;
 
 // Uniform locations
 static GLint g_u_sky_top = -1, g_u_sky_bot = -1, g_u_sky_star = -1, g_u_sky_time = -1;
-static GLint g_u_sky_yaw = -1, g_u_sky_pitch = -1;
+static GLint g_u_sky_fwd = -1, g_u_sky_right = -1, g_u_sky_up = -1, g_u_sky_aspect = -1;
 static GLint g_u_mvp = -1, g_u_cam = -1, g_u_fog_col = -1, g_u_fog_params = -1;
 static GLint g_u_time = -1, g_u_flash = -1, g_u_fog_max = -1;
 
 // Strictly GLSL ES 1.00 compatible for rawdrawandroid's ES 2.0 EGL context
 static const char *SKY_VS =
     "attribute vec2 a_pos;\n"
-    "varying vec2 v_uv;\n"
+    "varying vec2 v_ndc;\n"
     "void main() {\n"
-    "  v_uv = a_pos * 0.5 + 0.5;\n"
+    "  v_ndc = a_pos;\n"
     "  gl_Position = vec4(a_pos, 0.999, 1.0);\n"
     "}\n";
 
 static const char *SKY_FS =
     "precision highp float;\n"
-    "varying vec2 v_uv;\n"
+    "varying vec2 v_ndc;\n"
     "uniform vec3 u_top;\n"
     "uniform vec3 u_bot;\n"
     "uniform float u_star;\n"
     "uniform float u_time;\n"
-    "uniform float u_yaw;\n"
-    "uniform float u_pitch;\n"
-    "float hash21(vec2 p) {\n"
-    "  p = fract(p * vec2(123.34, 456.21));\n"
-    "  p += dot(p, p + 45.32);\n"
-    "  return fract(p.x * p.y);\n"
+    "uniform vec3 u_fwd;\n"
+    "uniform vec3 u_right;\n"
+    "uniform vec3 u_up;\n"
+    "uniform float u_aspect;\n"
+    "float hash31(vec3 p) {\n"
+    "  p = fract(p * vec3(123.34, 456.21, 789.18));\n"
+    "  p += dot(p, p.yzx + 45.32);\n"
+    "  return fract((p.x + p.y) * p.z);\n"
     "}\n"
     "void main() {\n"
-    "  float h_band = clamp(v_uv.y, 0.0, 1.0);\n"
+    "  vec3 dir = normalize(u_fwd + v_ndc.x * u_aspect * 0.74 * u_right + v_ndc.y * 0.74 * u_up);\n"
+    "  float h_band = clamp(dir.y * 0.78 + 0.36, 0.0, 1.0);\n"
     "  vec3 col = mix(u_bot, u_top, pow(h_band, 0.85));\n"
-    "  float horizon_glow = exp(-abs(v_uv.y - 0.42) * 7.0) * 0.14;\n"
+    "  float horizon_glow = exp(-abs(dir.y) * 5.5) * 0.16;\n"
     "  col += u_bot * horizon_glow;\n"
-    "  if (u_star > 0.5 && v_uv.y > 0.18) {\n"
-    "    vec2 grid = floor((v_uv + vec2(u_yaw * 0.16, u_pitch * 0.16)) * vec2(160.0, 92.0));\n"
-    "    float h = hash21(grid);\n"
-    "    if (h > 0.990) {\n"
+    "  if (u_star > 0.5) {\n"
+    "    vec3 cell = floor(dir * 96.0);\n"
+    "    float h = hash31(cell);\n"
+    "    if (h > 0.992) {\n"
     "      float tw = 0.65 + 0.35 * sin(u_time * 3.0 + h * 90.0);\n"
-    "      col += vec3(0.85, 0.93, 1.0) * tw * u_star;\n"
+    "      col += vec3(0.86, 0.94, 1.0) * tw * u_star;\n"
+    "    }\n"
+    "  } else if (dir.y > 0.04) {\n"
+    "    vec2 c_uv = dir.xz / max(dir.y + 0.25, 0.25) * 1.4 + vec2(u_time * 0.015, 0.0);\n"
+    "    float cn = hash31(vec3(floor(c_uv * 2.5), 1.0));\n"
+    "    if (cn > 0.72) {\n"
+    "      col = mix(col, vec3(0.96, 0.98, 1.0), 0.18 * smoothstep(0.04, 0.35, dir.y));\n"
     "    }\n"
     "  }\n"
     "  gl_FragColor = vec4(col, 1.0);\n"
@@ -261,70 +298,112 @@ static const char *WORLD_FS =
     "  float cell_n = h21(floor(uv * 8.0));\n"
     "  float e = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));\n"
     "  float d_cen = max(abs(uv.x - 0.5), abs(uv.y - 0.5)) * 2.0;\n"
-    "  float edge_str = (tier > 1.5) ? 0.16 : ((tier > 0.5) ? 0.20 : 0.34);\n"
+    "  float outline_w = (tier > 1.5) ? 0.025 : ((tier > 0.5) ? 0.036 : 0.048);\n"
     "  if (style < 0.5) {\n"
-    "    // Stone / Tutorial / Sand / Dirt architectural blocks\n"
-    "    float grain = 0.90 + 0.18 * h21(floor(uv * 12.0));\n"
+    "    // Stone / Tutorial / Sand / Dirt crisp Steam FBW voxel outline + subtle stone grain\n"
+    "    float grain = 0.92 + 0.14 * h21(floor(uv * 12.0));\n"
     "    base *= grain;\n"
-    "    float seam = (e < 0.045) ? (1.0 - edge_str) : ((e < 0.085) ? 1.07 : 1.0);\n"
-    "    base *= seam;\n"
+    "    if (e < outline_w) base *= 0.22;\n"
+    "    else if (e < outline_w + 0.035) base *= 1.08;\n"
     "  } else if (style < 1.5) {\n"
-    "    // Black Cube / Core Gate: Steam FBW recursive Menger border & nested fractal rings\n"
-    "    float ring = fract(d_cen * 3.0 - u_time * 0.35);\n"
-    "    if (e < 0.07) {\n"
-    "      base = mix(base, vec3(0.58, 0.88, 1.0), 0.52);\n"
-    "    } else if (d_cen < 0.34) {\n"
-    "      base *= 0.22;\n"
-    "    } else if (ring < 0.18) {\n"
-    "      base = mix(base * 0.45, vec3(0.28, 0.90, 1.0), 0.58);\n"
+    "    // Black Cube / Menger Sponge: crisp grey stone trusses + diagonal X-brace + hollow cavity\n"
+    "    float diag = min(abs(uv.x - uv.y), abs(uv.x + uv.y - 1.0));\n"
+    "    if (e < 0.055) {\n"
+    "      base = vec3(0.08, 0.09, 0.12);\n"
+    "    } else if (d_cen > 0.58 || diag < 0.065) {\n"
+    "      base *= (0.94 + 0.12 * cell_n);\n"
     "    } else {\n"
-    "      base *= 0.55 + 0.35 * cell_n;\n"
+    "      base = mix(base * 0.24, vec3(0.18, 0.72, 0.92), step(0.84, fract(d_cen * 3.0 - u_time * 0.25)) * 0.45);\n"
     "    }\n"
-    "    light = max(light, 0.88);\n"
+    "    light = max(light, 0.92);\n"
     "  } else if (style < 2.5) {\n"
-    "    // Stations / Upgrades / Tome / Spawner: glowing console frame + animated emblem\n"
-    "    float pulse = 0.86 + 0.18 * sin(u_time * 4.0);\n"
+    "    // Stations / Upgrades / Tome / Spawner: crisp frame + glowing animated center emblem\n"
+    "    float pulse = 0.88 + 0.16 * sin(u_time * 4.0);\n"
     "    float icon = step(0.18, d_cen) * (1.0 - step(0.46, d_cen));\n"
-    "    if (e < 0.075) base = mix(base, vec3(1.0), 0.42);\n"
-    "    else if (icon > 0.5) base = mix(base, vec3(1.0, 0.96, 0.72), 0.50);\n"
-    "    else base *= 0.82;\n"
+    "    if (e < 0.065) base = vec3(0.08, 0.10, 0.14);\n"
+    "    else if (e < 0.105) base = mix(base, vec3(1.0), 0.45);\n"
+    "    else if (icon > 0.5) base = mix(base, vec3(1.0, 0.96, 0.72), 0.55);\n"
+    "    else base *= 0.85;\n"
     "    base *= pulse;\n"
     "    light = max(light, 0.98);\n"
     "  } else if (style < 3.5) {\n"
     "    // Ice & Glass crystal prism\n"
     "    float sheen = smoothstep(0.62, 0.98, fract(uv.x * 0.75 + uv.y * 0.85));\n"
     "    base = mix(base, vec3(0.92, 0.99, 1.0), sheen * 0.45);\n"
-    "    if (e < 0.055) base = mix(base, vec3(0.85, 0.98, 1.0), 0.42);\n"
+    "    if (e < outline_w) base *= 0.45;\n"
     "  } else if (style < 4.5) {\n"
-    "    // Grass & Leaves: organic leaf/moss canopy speckles without hard grid\n"
-    "    float dapple = 0.80 + 0.36 * h21(floor(uv * 10.0));\n"
+    "    // Grass & Leaves: vibrant foliage speckles + crisp voxel edge\n"
+    "    float dapple = 0.82 + 0.32 * h21(floor(uv * 10.0));\n"
     "    base *= dapple;\n"
-    "    if (e < 0.035) base *= (1.0 - edge_str * 0.5);\n"
+    "    if (e < outline_w) base *= 0.32;\n"
     "  } else if (style < 5.5) {\n"
     "    // Wood bark grain\n"
     "    float bark = 0.84 + 0.24 * sin(uv.x * 28.0 + cell_n * 3.1);\n"
     "    base *= bark;\n"
-    "    if (e < 0.04) base *= (1.0 - edge_str * 0.65);\n"
+    "    if (e < outline_w) base *= 0.28;\n"
     "  } else if (style < 6.5) {\n"
     "    // Alpha Cube / White Flower / Mylantis circuit lattice\n"
     "    float trace = step(0.84, max(puv.x, puv.y));\n"
-    "    if (e < 0.065) base = mix(base, vec3(1.0), 0.38);\n"
+    "    if (e < 0.055) base *= 0.24;\n"
     "    else if (trace > 0.5) base *= 1.24;\n"
     "    else base *= (0.88 + 0.14 * cell_n);\n"
     "  } else if (style < 7.5) {\n"
     "    // Yellow Flower / Pollen / Desert World: striated radiant bands\n"
     "    float strata = 0.88 + 0.20 * sin(uv.y * 18.0 + sin(uv.x * 6.0));\n"
     "    base *= strata;\n"
-    "    if (e < 0.045) base *= 1.12;\n"
+    "    if (e < outline_w) base *= 0.28;\n"
     "  } else if (style < 8.5) {\n"
     "    // Gold Ore / Crate / Vault Door: metallic rivet & ore flecks\n"
     "    float fleck = step(0.78, cell_n);\n"
-    "    if (e < 0.08) base *= 0.68;\n"
+    "    if (e < 0.065) base *= 0.25;\n"
     "    else if (fleck > 0.5) base = mix(base, vec3(1.0, 0.94, 0.55), 0.55);\n"
-    "  } else {\n"
+    "  } else if (style < 9.5) {\n"
     "    // Dynamic entities / rings / shots: luminous smooth shading\n"
     "    float rim = smoothstep(0.55, 0.98, d_cen);\n"
     "    base = mix(base, vec3(1.0), rim * 0.22);\n"
+    "  } else if (style < 10.5) {\n"
+    "    // BLK_MYSTERY_Q: Vibrant electric blue tile with glowing white '?' glyph\n"
+    "    base = vec3(0.10, 0.34, 0.92);\n"
+    "    vec2 q = floor(uv * 8.0);\n"
+    "    float qm = 0.0;\n"
+    "    if (q.y == 6.0 && q.x >= 2.0 && q.x <= 5.0) qm = 1.0;\n"
+    "    if (q.y == 5.0 && (q.x == 2.0 || q.x == 5.0)) qm = 1.0;\n"
+    "    if (q.y == 4.0 && q.x == 5.0) qm = 1.0;\n"
+    "    if (q.y == 3.0 && (q.x == 3.0 || q.x == 4.0)) qm = 1.0;\n"
+    "    if (q.y == 2.0 && q.x == 3.0) qm = 1.0;\n"
+    "    if (q.y == 0.0 && q.x == 3.0) qm = 1.0;\n"
+    "    if (e < 0.06) base = vec3(0.04, 0.10, 0.28);\n"
+    "    else if (qm > 0.5) base = vec3(1.0, 0.98, 0.85);\n"
+    "    light = max(light, 0.96);\n"
+    "  } else if (style < 11.5) {\n"
+    "    // BLK_HAZARD_NUKE: Diagonal yellow & black industrial stripes\n"
+    "    float stripe = step(0.5, fract((uv.x + uv.y) * 3.0));\n"
+    "    base = mix(vec3(0.08, 0.09, 0.11), vec3(0.98, 0.82, 0.12), stripe);\n"
+    "    if (e < 0.06) base = vec3(0.04, 0.04, 0.05);\n"
+    "    light = max(light, 0.92);\n"
+    "  } else if (style < 12.5) {\n"
+    "    // BLK_INFINITY_RED: Red fractal cube with crisp white infinity loop\n"
+    "    base = vec3(0.84, 0.12, 0.18);\n"
+    "    float dL = length(uv - vec2(0.32, 0.5));\n"
+    "    float dR = length(uv - vec2(0.68, 0.5));\n"
+    "    float inf = step(abs(dL - 0.16), 0.05) + step(abs(dR - 0.16), 0.05);\n"
+    "    if (e < 0.06) base = vec3(0.14, 0.03, 0.05);\n"
+    "    else if (inf > 0.5) base = vec3(1.0);\n"
+    "    light = max(light, 0.95);\n"
+    "  } else if (style < 13.5) {\n"
+    "    // BLK_TOPAZ_CHECK: Crisp cyan/teal mineral checkerboard\n"
+    "    vec2 chk = floor(uv * 4.0);\n"
+    "    float parity = mod(chk.x + chk.y, 2.0);\n"
+    "    base = mix(vec3(0.08, 0.52, 0.58), vec3(0.34, 0.95, 0.90), parity);\n"
+    "    if (e < 0.055) base *= 0.25;\n"
+    "    light = max(light, 0.92);\n"
+    "  } else {\n"
+    "    // BLK_TEXT_BLOCK: Glowing cyan holographic log lines\n"
+    "    base = vec3(0.08, 0.24, 0.34);\n"
+    "    float row_bar = step(0.55, fract(uv.y * 5.0)) * step(0.14, uv.x) * step(uv.x, 0.86);\n"
+    "    if (e < 0.06) base = vec3(0.03, 0.08, 0.12);\n"
+    "    else if (row_bar > 0.5) base = vec3(0.32, 0.96, 1.0);\n"
+    "    light = max(light, 0.98);\n"
     "  }\n"
     "  vec3 lit = clamp(base * light, 0.0, 1.0);\n"
     "  float dist = length(v_pos - u_cam);\n"
@@ -386,8 +465,10 @@ static void init_gl_resources(void) {
     g_u_sky_bot = glGetUniformLocation(g_prog_sky, "u_bot");
     g_u_sky_star = glGetUniformLocation(g_prog_sky, "u_star");
     g_u_sky_time = glGetUniformLocation(g_prog_sky, "u_time");
-    g_u_sky_yaw = glGetUniformLocation(g_prog_sky, "u_yaw");
-    g_u_sky_pitch = glGetUniformLocation(g_prog_sky, "u_pitch");
+    g_u_sky_fwd = glGetUniformLocation(g_prog_sky, "u_fwd");
+    g_u_sky_right = glGetUniformLocation(g_prog_sky, "u_right");
+    g_u_sky_up = glGetUniformLocation(g_prog_sky, "u_up");
+    g_u_sky_aspect = glGetUniformLocation(g_prog_sky, "u_aspect");
 
     g_u_mvp = glGetUniformLocation(g_prog_world, "u_mvp");
     g_u_cam = glGetUniformLocation(g_prog_world, "u_cam");
@@ -409,6 +490,16 @@ static void init_gl_resources(void) {
     glGenBuffers(1, &g_vbo_band2);
     glGenBuffers(1, &g_vbo_band3);
     glGenBuffers(1, &g_vbo_dyn);
+    glGenBuffers(MAX_INWARD_SLOTS, g_inw_vbos);
+    glGenBuffers(MAX_L1_INWARD_SLOTS, g_l1_inw_vbos);
+    for (int i = 0; i < MAX_INWARD_SLOTS; i++) {
+        g_inw_vcnt[i] = 0;
+        g_inw_vbo_dirty[i] = 1;
+    }
+    for (int i = 0; i < MAX_L1_INWARD_SLOTS; i++) {
+        g_l1_inw_vcnt[i] = 0;
+        g_l1_inw_vbo_dirty[i] = 1;
+    }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     g_gl_ready = 1;
 }
@@ -416,25 +507,27 @@ static void init_gl_resources(void) {
 static void block_color(uint8_t blk, uint8_t *r, uint8_t *g, uint8_t *b, float *style) {
     *style = 0.0f;
     switch (blk) {
-        case BLK_WALL_TUT:      *r = 96;  *g = 132; *b = 196; *style = 0.0f; break;
-        case BLK_GRASS:         *r = 52;  *g = 182; *b = 82;  *style = 4.0f; break;
-        case BLK_DIRT:          *r = 122; *g = 82;  *b = 52;  *style = 0.0f; break;
-        case BLK_WOOD:          *r = 126; *g = 78;  *b = 44;  *style = 5.0f; break;
-        case BLK_LEAVES:        *r = 38;  *g = 152; *b = 88;  *style = 4.0f; break;
+        case BLK_WALL_TUT:      *r = 166; *g = 176; *b = 198; *style = 0.0f; break;
+        case BLK_GRASS:         *r = 46;  *g = 176; *b = 82;  *style = 4.0f; break;
+        case BLK_DIRT:          *r = 120; *g = 82;  *b = 52;  *style = 0.0f; break;
+        case BLK_WOOD:          *r = 128; *g = 78;  *b = 44;  *style = 5.0f; break;
+        case BLK_LEAVES:        *r = 34;  *g = 148; *b = 76;  *style = 4.0f; break;
         case BLK_PETAL_Y:       *r = 248; *g = 204; *b = 38;  *style = 7.0f; break;
         case BLK_POLLEN:        *r = 255; *g = 164; *b = 36;  *style = 7.0f; break;
         case BLK_PETAL_W:       *r = 236; *g = 242; *b = 252; *style = 6.0f; break;
-        case BLK_MYLANTIS:      *r = 46;  *g = 178; *b = 172; *style = 6.0f; break;
+        case BLK_MYLANTIS:      *r = 38;  *g = 178; *b = 172; *style = 6.0f; break;
         case BLK_ICE:           *r = 112; *g = 218; *b = 250; *style = 3.0f; break;
         case BLK_SAND:          *r = 226; *g = 192; *b = 116; *style = 7.0f; break;
         case BLK_GLASS:         *r = 148; *g = 230; *b = 248; *style = 3.0f; break;
-        case BLK_STONE:         *r = 110; *g = 118; *b = 134; *style = 0.0f; break;
+        case BLK_STONE:         *r = 104; *g = 112; *b = 128; *style = 0.0f; break;
         case BLK_GOLD_ORE:      *r = 248; *g = 204; *b = 46;  *style = 8.0f; break;
-        case BLK_CRATE:         *r = 192; *g = 132; *b = 56;  *style = 8.0f; break;
+        case BLK_CRATE:         *r = 196; *g = 134; *b = 52;  *style = 8.0f; break;
         case BLK_SPAWNER:       *r = 196; *g = 38;  *b = 76;  *style = 2.0f; break;
         case BLK_LOCKED_DOOR:   *r = 218; *g = 158; *b = 44;  *style = 8.0f; break;
+        case BLK_MYSTERY_Q:     *r = 46;  *g = 118; *b = 244; *style = 10.0f; break;
+        case BLK_HAZARD_NUKE:   *r = 248; *g = 208; *b = 32;  *style = 11.0f; break;
 
-        case BLK_BLACK_CUBE:    *r = 26;  *g = 36;  *b = 58;  *style = 1.0f; break;
+        case BLK_BLACK_CUBE:    *r = 116; *g = 122; *b = 134; *style = 1.0f; break;
         case BLK_WHITE_FLOWER:  *r = 242; *g = 246; *b = 255; *style = 6.0f; break;
         case BLK_ALPHA_CUBE:    *r = 236; *g = 76;  *b = 166; *style = 6.0f; break;
         case BLK_FLOWER_Y_CORE: *r = 255; *g = 218; *b = 48;  *style = 1.0f; break;
@@ -443,6 +536,9 @@ static void block_color(uint8_t blk, uint8_t *r, uint8_t *g, uint8_t *b, float *
         case BLK_ICE_WORLD:     *r = 100; *g = 222; *b = 255; *style = 3.0f; break;
         case BLK_DESERT_WORLD:  *r = 238; *g = 186; *b = 88;  *style = 7.0f; break;
         case BLK_CORE_GATE:     *r = 248; *g = 64;  *b = 188; *style = 1.0f; break;
+        case BLK_TOPAZ_CHECK:   *r = 38;  *g = 208; *b = 202; *style = 13.0f; break;
+        case BLK_INFINITY_RED:  *r = 218; *g = 38;  *b = 48;  *style = 12.0f; break;
+        case BLK_TEXT_BLOCK:    *r = 56;  *g = 224; *b = 255; *style = 14.0f; break;
 
         case BLK_BUY_STATION:   *r = 46;  *g = 218; *b = 122; *style = 2.0f; break;
         case BLK_SELL_STATION:  *r = 56;  *g = 192; *b = 248; *style = 2.0f; break;
@@ -555,13 +651,42 @@ static void emit_cube(FbwVert *buf, int *cnt, int max_v,
     push_quad(buf, cnt, max_v, x1,y0,z0, x0,y0,z0, x0,y1,z0, x1,y1,z0, 0.72f, style, r, g, b, a);
 }
 
+static inline uint8_t neighbor_at_offset(int ox, int oy, int oz, int lx, int ly, int lz) {
+    if (lx < 0 || lx >= 16 || ly < 0 || ly >= 16 || lz < 0 || lz >= 16) return BLK_AIR;
+    for (int s = 0; s < MAX_NEIGHBORS; s++) {
+        if (g_neighbor_valid[s] &&
+            g_neighbor_dx[s] == ox && g_neighbor_dy[s] == oy && g_neighbor_dz[s] == oz) {
+            return g_neighbors[s][(ly << 8) | (lz << 4) | lx];
+        }
+    }
+    return BLK_AIR;
+}
+
 static inline uint8_t chunk_at(int layer, int x, int y, int z) {
-    if (x < 0 || x >= 16 || y < 0 || y >= 16 || z < 0 || z >= 16) return BLK_AIR;
-    return g_chunks[layer][(y << 8) | (z << 4) | x];
+    if (x >= 0 && x < 16 && y >= 0 && y < 16 && z >= 0 && z < 16) {
+        return g_chunks[layer][(y << 8) | (z << 4) | x];
+    }
+    if (layer == 0 && x >= -16 && x < 32 && y >= -16 && y < 32 && z >= -16 && z < 32) {
+        int ox = (x < 0) ? -1 : ((x >= 16) ? 1 : 0);
+        int oy = (y < 0) ? -1 : ((y >= 16) ? 1 : 0);
+        int oz = (z < 0) ? -1 : ((z >= 16) ? 1 : 0);
+        return neighbor_at_offset(ox, oy, oz, x - ox * 16, y - oy * 16, z - oz * 16);
+    }
+    return BLK_AIR;
 }
 
 static inline int chunk_occ(int layer, int x, int y, int z) {
     return chunk_at(layer, x, y, z) != BLK_AIR ? 1 : 0;
+}
+
+static inline int nb_chunk_occ(int nb_slot, int x, int y, int z) {
+    if (x >= 0 && x < 16 && y >= 0 && y < 16 && z >= 0 && z < 16) {
+        return g_neighbors[nb_slot][(y << 8) | (z << 4) | x] != BLK_AIR ? 1 : 0;
+    }
+    int wx = g_neighbor_dx[nb_slot] * 16 + x;
+    int wy = g_neighbor_dy[nb_slot] * 16 + y;
+    int wz = g_neighbor_dz[nb_slot] * 16 + z;
+    return chunk_at(0, wx, wy, wz) != BLK_AIR ? 1 : 0;
 }
 
 static inline float corner_ao(int s1, int s2, int c) {
@@ -579,17 +704,15 @@ static inline int inward_occ(int layer, int slot, int lx, int ly, int lz,
     int nx = lx + (ix < 0 ? -1 : (ix >= 16 ? 1 : 0));
     int ny = ly + (iy < 0 ? -1 : (iy >= 16 ? 1 : 0));
     int nz = lz + (iz < 0 ? -1 : (iz >= 16 ? 1 : 0));
-    if (nx < 0 || nx >= 16 || ny < 0 || ny >= 16 || nz < 0 || nz >= 16) {
-        return 0;
-    }
     if (skip_hole && nx == hole_x && ny == hole_y && nz == hole_z) {
         return 0;
     }
     uint8_t nb = chunk_at(layer, nx, ny, nz);
     if (nb == BLK_AIR) return 0;
-    const int *grid = (layer == 0) ? g_inward_grid : g_l1_inward_grid;
-    // If neighbor also has an active inward slot, keep portal skin open
-    if (grid[(ny << 8) | (nz << 4) | nx] >= 0) return 0;
+    if (nx >= 0 && nx < 16 && ny >= 0 && ny < 16 && nz >= 0 && nz < 16) {
+        const int *grid = (layer == 0) ? g_inward_grid : g_l1_inward_grid;
+        if (grid[(ny << 8) | (nz << 4) | nx] >= 0) return 0;
+    }
     return 1;
 }
 
@@ -604,9 +727,10 @@ static void apply_depth_tint(uint8_t *r, uint8_t *g, uint8_t *b) {
 }
 
 static int is_accent_or_portal_blk(uint8_t b) {
-    if (b >= BLK_BLACK_CUBE && b <= BLK_CORE_GATE) return 1;
+    if (b >= BLK_BLACK_CUBE && b <= BLK_TEXT_BLOCK) return 1;
     if (b >= BLK_BUY_STATION && b <= BLK_UPG_WEP) return 1;
-    if (b == BLK_GOLD_ORE || b == BLK_CRATE || b == BLK_PETAL_Y || b == BLK_PETAL_W || b == BLK_WOOD) return 1;
+    if (b == BLK_GOLD_ORE || b == BLK_CRATE || b == BLK_MYSTERY_Q || b == BLK_HAZARD_NUKE ||
+        b == BLK_PETAL_Y || b == BLK_PETAL_W || b == BLK_WOOD) return 1;
     return 0;
 }
 
@@ -651,12 +775,13 @@ static inline int pooled_occ(const uint8_t *pooled, int dim,
     int nx = lx + (px < 0 ? -1 : (px >= dim ? 1 : 0));
     int ny = ly + (py < 0 ? -1 : (py >= dim ? 1 : 0));
     int nz = lz + (pz < 0 ? -1 : (pz >= dim ? 1 : 0));
-    if (nx < 0 || nx >= 16 || ny < 0 || ny >= 16 || nz < 0 || nz >= 16) return 0;
     if (skip_hole && nx == hole_x && ny == hole_y && nz == hole_z) return 0;
     uint8_t nb = chunk_at(layer, nx, ny, nz);
     if (nb == BLK_AIR) return 0;
-    const int *grid = (layer == 0) ? g_inward_grid : g_l1_inward_grid;
-    if (grid[(ny << 8) | (nz << 4) | nx] >= 0) return 0;
+    if (nx >= 0 && nx < 16 && ny >= 0 && ny < 16 && nz >= 0 && nz < 16) {
+        const int *grid = (layer == 0) ? g_inward_grid : g_l1_inward_grid;
+        if (grid[(ny << 8) | (nz << 4) | nx] >= 0) return 0;
+    }
     return 1;
 }
 
@@ -797,29 +922,123 @@ static void mesh_inward_slot(int layer, int slot, int lx, int ly, int lz,
                 }
                 // -Y
                 if (!inward_occ(layer, slot, lx, ly, lz, x, y - 1, z, hole_x, hole_y, hole_z, skip_hole)) {
-                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx1,wy0,wz0, wx1,wy0,wz1, wx0,wy0,wz1,
-                                  0.60f, style, r, g, b, 255);
+                    float a0 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y - 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y - 1, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y - 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a1 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y - 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y - 1, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y - 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a2 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y - 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y - 1, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y - 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a3 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y - 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y - 1, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y - 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx1,wy0,wz0, wx1,wy0,wz1, wx0,wy0,wz1,
+                                     0.60f * a0, 0.60f * a1, 0.60f * a2, 0.60f * a3, style, r, g, b, 255);
                 }
                 // +X
                 if (!inward_occ(layer, slot, lx, ly, lz, x + 1, y, z, hole_x, hole_y, hole_z, skip_hole)) {
-                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz1, wx1,wy0,wz0, wx1,wy1,wz0, wx1,wy1,wz1,
-                                  0.88f, style, r, g, b, 255);
+                    float a0 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y - 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y - 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a1 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y - 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y - 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a2 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y + 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y + 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a3 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y + 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y + 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz1, wx1,wy0,wz0, wx1,wy1,wz0, wx1,wy1,wz1,
+                                     0.88f * a0, 0.88f * a1, 0.88f * a2, 0.88f * a3, style, r, g, b, 255);
                 }
                 // -X
                 if (!inward_occ(layer, slot, lx, ly, lz, x - 1, y, z, hole_x, hole_y, hole_z, skip_hole)) {
-                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx0,wy0,wz1, wx0,wy1,wz1, wx0,wy1,wz0,
-                                  0.76f, style, r, g, b, 255);
+                    float a0 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y - 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y - 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a1 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y - 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y - 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a2 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y + 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y + 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a3 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y + 1, z, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y + 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx0,wy0,wz1, wx0,wy1,wz1, wx0,wy1,wz0,
+                                     0.76f * a0, 0.76f * a1, 0.76f * a2, 0.76f * a3, style, r, g, b, 255);
                 }
                 // +Z
                 if (!inward_occ(layer, slot, lx, ly, lz, x, y, z + 1, hole_x, hole_y, hole_z, skip_hole)) {
-                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz1, wx1,wy0,wz1, wx1,wy1,wz1, wx0,wy1,wz1,
-                                  0.95f, style, r, g, b, 255);
+                    float a0 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y - 1, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y - 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a1 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y - 1, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y - 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a2 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y + 1, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y + 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a3 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y + 1, z + 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y + 1, z + 1, hole_x, hole_y, hole_z, skip_hole));
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz1, wx1,wy0,wz1, wx1,wy1,wz1, wx0,wy1,wz1,
+                                     0.95f * a0, 0.95f * a1, 0.95f * a2, 0.95f * a3, style, r, g, b, 255);
                 }
                 // -Z
                 if (!inward_occ(layer, slot, lx, ly, lz, x, y, z - 1, hole_x, hole_y, hole_z, skip_hole)) {
-                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz0, wx0,wy0,wz0, wx0,wy1,wz0, wx1,wy1,wz0,
-                                  0.70f, style, r, g, b, 255);
+                    float a0 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y - 1, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y - 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a1 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y - 1, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y - 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a2 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x - 1, y, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y + 1, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x - 1, y + 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    float a3 = corner_ao(inward_occ(layer, slot, lx, ly, lz, x + 1, y, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x, y + 1, z - 1, hole_x, hole_y, hole_z, skip_hole),
+                                         inward_occ(layer, slot, lx, ly, lz, x + 1, y + 1, z - 1, hole_x, hole_y, hole_z, skip_hole));
+                    push_quad_ao_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz0, wx0,wy0,wz0, wx0,wy1,wz0, wx1,wy1,wz0,
+                                     0.70f * a0, 0.70f * a1, 0.70f * a2, 0.70f * a3, style, r, g, b, 255);
                 }
+            }
+        }
+    }
+}
+
+static void mesh_neighbor_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow, int nb) {
+    float ox = (float)(g_neighbor_dx[nb] * 16);
+    float oy = (float)(g_neighbor_dy[nb] * 16);
+    float oz = (float)(g_neighbor_dz[nb] * 16);
+    int y, z, x;
+    for (y = 0; y < CHUNK_DIM; y++) {
+        for (z = 0; z < CHUNK_DIM; z++) {
+            for (x = 0; x < CHUNK_DIM; x++) {
+                uint8_t blk = g_neighbors[nb][(y << 8) | (z << 4) | x];
+                if (blk == BLK_AIR) continue;
+                uint8_t r, g, b;
+                float style;
+                block_color(blk, &r, &g, &b, &style);
+                apply_depth_tint(&r, &g, &b);
+                float wx0 = ox + (float)x, wx1 = wx0 + 1.0f;
+                float wy0 = oy + (float)y, wy1 = wy0 + 1.0f;
+                float wz0 = oz + (float)z, wz1 = wz0 + 1.0f;
+                if (!nb_chunk_occ(nb, x, y + 1, z))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy1,wz1, wx1,wy1,wz1, wx1,wy1,wz0, wx0,wy1,wz0, 1.00f, style, r, g, b, 255);
+                if (!nb_chunk_occ(nb, x, y - 1, z))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx1,wy0,wz0, wx1,wy0,wz1, wx0,wy0,wz1, 0.60f, style, r, g, b, 255);
+                if (!nb_chunk_occ(nb, x + 1, y, z))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz1, wx1,wy0,wz0, wx1,wy1,wz0, wx1,wy1,wz1, 0.88f, style, r, g, b, 255);
+                if (!nb_chunk_occ(nb, x - 1, y, z))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx0,wy0,wz1, wx0,wy1,wz1, wx0,wy1,wz0, 0.76f, style, r, g, b, 255);
+                if (!nb_chunk_occ(nb, x, y, z + 1))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz1, wx1,wy0,wz1, wx1,wy1,wz1, wx0,wy1,wz1, 0.95f, style, r, g, b, 255);
+                if (!nb_chunk_occ(nb, x, y, z - 1))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz0, wx0,wy0,wz0, wx0,wy1,wz0, wx1,wy1,wz0, 0.70f, style, r, g, b, 255);
             }
         }
     }
@@ -828,7 +1047,7 @@ static void mesh_inward_slot(int layer, int slot, int lx, int ly, int lz,
 static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                           int layer, float scale, float ox, float oy, float oz,
                           int hole_x, int hole_y, int hole_z, int skip_hole,
-                          float tier_offset, int use_inward) {
+                          float tier_offset, int skip_inward) {
     int y, z, x;
     for (y = 0; y < CHUNK_DIM; y++) {
         for (z = 0; z < CHUNK_DIM; z++) {
@@ -837,26 +1056,10 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                 if (blk == BLK_AIR) continue;
                 if (skip_hole && x == hole_x && y == hole_y && z == hole_z) continue;
 
-                if (use_inward && (layer == 0 || layer == 1)) {
+                if (skip_inward && (layer == 0 || layer == 1)) {
                     int slot = (layer == 0) ? g_inward_grid[(y << 8) | (z << 4) | x]
                                             : g_l1_inward_grid[(y << 8) | (z << 4) | x];
-                    if (slot >= 0) {
-                        float sub_tier = (layer == 0) ? 16.0f : 0.0f;
-                        int prev_t = (layer == 0) ? g_inward_tier[slot] : g_l1_inward_tier[slot];
-                        int tier = compute_slot_tier(layer, x, y, z, scale, ox, oy, oz, prev_t);
-                        if (layer == 0) g_inward_tier[slot] = tier;
-                        else g_l1_inward_tier[slot] = tier;
-                        if (tier == 1) {
-                            mesh_inward_slot(layer, slot, x, y, z, scale, ox, oy, oz,
-                                             hole_x, hole_y, hole_z, skip_hole,
-                                             sub_tier, pbuf, cnt, max_v, allow_grow);
-                        } else {
-                            mesh_inward_slot_pooled(layer, slot, x, y, z, scale, ox, oy, oz,
-                                                    hole_x, hole_y, hole_z, skip_hole,
-                                                    sub_tier, tier, pbuf, cnt, max_v, allow_grow);
-                        }
-                        continue;
-                    }
+                    if (slot >= 0) continue;
                 }
 
                 uint8_t r, g, b;
@@ -1022,27 +1225,108 @@ static void compute_parent_origins(double ox_out[MAX_PARENTS], double oy_out[MAX
     }
 }
 
-static void rebuild_band1_mesh(const double ox[MAX_PARENTS], const double oy[MAX_PARENTS], const double oz[MAX_PARENTS]) {
+static void rebuild_band1_shell(const double ox[MAX_PARENTS], const double oy[MAX_PARENTS], const double oz[MAX_PARENTS]) {
     refresh_inward_grid();
     g_band1_cnt = 0;
 
-    // Layer 0 (1x + inward 1/16x sub-voxels)
+    // Layer 0 (1x non-inward shells)
     mesh_layer_to(&g_band1_verts, &g_band1_cnt, &g_band1_cap, 1,
                   0, 1.0f, 0.0f, 0.0f, 0.0f, 0, 0, 0, 0, 0.0f, 1);
 
-    // Layer 1 (16x parent walls surrounding Layer 0 + inward 1x sub-voxels)
+    // 10 Sibling neighbor chunks around Layer 0
+    for (int nb = 0; nb < MAX_NEIGHBORS; nb++) {
+        if (g_neighbor_valid[nb]) {
+            mesh_neighbor_to(&g_band1_verts, &g_band1_cnt, &g_band1_cap, 1, nb);
+        }
+    }
+
+    // Layer 1 (16x parent walls surrounding Layer 0, excluding inward slots & player parent hole)
     if (g_parent_valid[0]) {
         mesh_layer_to(&g_band1_verts, &g_band1_cnt, &g_band1_cap, 1,
                       1, 16.0f, (float)ox[0], (float)oy[0], (float)oz[0],
                       g_parent_bx[0], g_parent_by[0], g_parent_bz[0], 1, 32.0f, 1);
     }
 
-    if (g_gl_ready && g_band1_cnt > 0 && g_band1_verts != NULL) {
+    if (g_gl_ready && g_band1_verts != NULL) {
         glBindBuffer(GL_ARRAY_BUFFER, g_vbo_band1);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(g_band1_cnt * sizeof(FbwVert)),
-                     g_band1_verts, GL_DYNAMIC_DRAW);
+                     g_band1_cnt > 0 ? g_band1_verts : NULL, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
+    g_shell_dirty = 0;
+}
+
+static void rebuild_dirty_inward_slots(const double ox[MAX_PARENTS], const double oy[MAX_PARENTS], const double oz[MAX_PARENTS]) {
+    int si;
+    for (si = 0; si < MAX_INWARD_SLOTS; si++) {
+        if (!g_inward_valid[si]) {
+            g_inw_vcnt[si] = 0;
+            g_inw_vbo_dirty[si] = 0;
+            continue;
+        }
+        int tier = compute_slot_tier(0, g_inward_bx[si], g_inward_by[si], g_inward_bz[si],
+                                     1.0f, 0.0f, 0.0f, 0.0f, g_inward_tier[si]);
+        if (tier != g_inward_tier[si]) {
+            g_inward_tier[si] = tier;
+            g_inw_vbo_dirty[si] = 1;
+        }
+        if (g_inw_vbo_dirty[si]) {
+            int cnt = 0;
+            if (tier == 1) {
+                mesh_inward_slot(0, si, g_inward_bx[si], g_inward_by[si], g_inward_bz[si],
+                                 1.0f, 0.0f, 0.0f, 0.0f, 0, 0, 0, 0,
+                                 16.0f, &g_slot_verts, &cnt, &g_slot_cap, 1);
+            } else {
+                mesh_inward_slot_pooled(0, si, g_inward_bx[si], g_inward_by[si], g_inward_bz[si],
+                                        1.0f, 0.0f, 0.0f, 0.0f, 0, 0, 0, 0,
+                                        16.0f, tier, &g_slot_verts, &cnt, &g_slot_cap, 1);
+            }
+            g_inw_vcnt[si] = cnt;
+            if (g_gl_ready && cnt > 0 && g_slot_verts != NULL) {
+                glBindBuffer(GL_ARRAY_BUFFER, g_inw_vbos[si]);
+                glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(cnt * sizeof(FbwVert)), g_slot_verts, GL_DYNAMIC_DRAW);
+            }
+            g_inw_vbo_dirty[si] = 0;
+        }
+    }
+
+    float l1ox = g_parent_valid[0] ? (float)ox[0] : 0.0f;
+    float l1oy = g_parent_valid[0] ? (float)oy[0] : 0.0f;
+    float l1oz = g_parent_valid[0] ? (float)oz[0] : 0.0f;
+    for (si = 0; si < MAX_L1_INWARD_SLOTS; si++) {
+        if (!g_l1_inward_valid[si] || !g_parent_valid[0]) {
+            g_l1_inw_vcnt[si] = 0;
+            g_l1_inw_vbo_dirty[si] = 0;
+            continue;
+        }
+        int tier = compute_slot_tier(1, g_l1_inward_bx[si], g_l1_inward_by[si], g_l1_inward_bz[si],
+                                     16.0f, l1ox, l1oy, l1oz, g_l1_inward_tier[si]);
+        if (tier != g_l1_inward_tier[si]) {
+            g_l1_inward_tier[si] = tier;
+            g_l1_inw_vbo_dirty[si] = 1;
+        }
+        if (g_l1_inw_vbo_dirty[si]) {
+            int cnt = 0;
+            if (tier == 1) {
+                mesh_inward_slot(1, si, g_l1_inward_bx[si], g_l1_inward_by[si], g_l1_inward_bz[si],
+                                 16.0f, l1ox, l1oy, l1oz,
+                                 g_parent_bx[0], g_parent_by[0], g_parent_bz[0], 1,
+                                 0.0f, &g_slot_verts, &cnt, &g_slot_cap, 1);
+            } else {
+                mesh_inward_slot_pooled(1, si, g_l1_inward_bx[si], g_l1_inward_by[si], g_l1_inward_bz[si],
+                                        16.0f, l1ox, l1oy, l1oz,
+                                        g_parent_bx[0], g_parent_by[0], g_parent_bz[0], 1,
+                                        0.0f, tier, &g_slot_verts, &cnt, &g_slot_cap, 1);
+            }
+            g_l1_inw_vcnt[si] = cnt;
+            if (g_gl_ready && cnt > 0 && g_slot_verts != NULL) {
+                glBindBuffer(GL_ARRAY_BUFFER, g_l1_inw_vbos[si]);
+                glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(cnt * sizeof(FbwVert)), g_slot_verts, GL_DYNAMIC_DRAW);
+            }
+            g_l1_inw_vbo_dirty[si] = 0;
+        }
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 static void rebuild_macro_bands(const double ox[MAX_PARENTS], const double oy[MAX_PARENTS], const double oz[MAX_PARENTS]) {
@@ -1124,13 +1408,22 @@ static void build_dynamic_verts(void) {
     for (i = 0; i < g_ent_cnt; i++) {
         FbwEnt *e = &g_ents[i];
         int k = e->kind;
-        if (k >= ENT_RING_GREEN && k <= ENT_RING_PINK) {
+        if ((k >= ENT_RING_GREEN && k <= ENT_RING_PINK) || k == ENT_RING_DANGER) {
             uint8_t r = 48, g = 255, b = 118;
-            if (k == ENT_RING_RED)   { r = 255; g = 68;  b = 68;  }
-            if (k == ENT_RING_BLUE)  { r = 64;  g = 174; b = 255; }
-            if (k == ENT_RING_PINK)  { r = 255; g = 92;  b = 224; }
+            if (k == ENT_RING_RED)    { r = 255; g = 68;  b = 68;  }
+            if (k == ENT_RING_BLUE)   { r = 64;  g = 174; b = 255; }
+            if (k == ENT_RING_PINK)   { r = 255; g = 92;  b = 224; }
+            if (k == ENT_RING_DANGER) { r = 255; g = 52;  b = 42;  }
             emit_ring_3d(e->x, e->y, e->z, 0.58f, t * 2.2f + i * 0.7f, r, g, b);
-            emit_ring_3d(e->x, e->y, e->z, 0.34f, -t * 3.1f, 255, 255, 255);
+            emit_ring_3d(e->x, e->y, e->z, 0.34f, -t * 3.1f,
+                         255, (uint8_t)(k == ENT_RING_DANGER ? 204 : 255), (uint8_t)(k == ENT_RING_DANGER ? 48 : 255));
+            continue;
+        }
+        if (k == ENT_MARKER_BEACON) {
+            float bob_m = sinf(t * 4.0f) * 0.10f;
+            emit_cube(g_dyn_verts, &g_dyn_vert_cnt, MAX_DYN_VERTS,
+                      e->x, e->y + bob_m, e->z, 0.24f, 74, 245, 128, 255, 2.0f);
+            emit_ring_3d(e->x, e->y + bob_m, e->z, 0.44f, t * 3.5f, 74, 245, 128);
             continue;
         }
 
@@ -1339,18 +1632,42 @@ FBW_VIS_DEFAULT void fbw_gl_push_chunk_quad(int layer, int qidx, int packed4) {
     g_chunks[layer][base + 3] = (uint8_t)((u >> 24) & 0xffu);
 }
 
+FBW_VIS_DEFAULT void fbw_gl_set_neighbor_meta(int nb, int valid, int dx, int dy, int dz, int biome) {
+    if (nb < 0 || nb >= MAX_NEIGHBORS) return;
+    g_neighbor_valid[nb] = valid;
+    g_neighbor_dx[nb] = dx;
+    g_neighbor_dy[nb] = dy;
+    g_neighbor_dz[nb] = dz;
+    g_neighbor_biome[nb] = biome;
+}
+
+FBW_VIS_DEFAULT void fbw_gl_push_neighbor_quad(int nb, int qidx, int packed4) {
+    if (nb < 0 || nb >= MAX_NEIGHBORS || qidx < 0 || qidx >= 1024) return;
+    uint32_t u = (uint32_t)packed4;
+    int base = qidx * 4;
+    g_neighbors[nb][base + 0] = (uint8_t)(u & 0xffu);
+    g_neighbors[nb][base + 1] = (uint8_t)((u >> 8) & 0xffu);
+    g_neighbors[nb][base + 2] = (uint8_t)((u >> 16) & 0xffu);
+    g_neighbors[nb][base + 3] = (uint8_t)((u >> 24) & 0xffu);
+}
+
 FBW_VIS_DEFAULT void fbw_gl_mark_chunks_dirty(void) {
     g_chunks_dirty = 1;
+    g_shell_dirty = 1;
 }
 
 FBW_VIS_DEFAULT void fbw_gl_set_inward_meta(int slot, int valid, int bx, int by, int bz, int biome) {
     if (slot < 0 || slot >= MAX_INWARD_SLOTS) return;
+    if (g_inward_valid[slot] != valid || g_inward_bx[slot] != bx || g_inward_by[slot] != by || g_inward_bz[slot] != bz) {
+        g_shell_dirty = 1;
+    }
     g_inward_valid[slot] = valid;
     g_inward_bx[slot] = bx;
     g_inward_by[slot] = by;
     g_inward_bz[slot] = bz;
     g_inward_biome[slot] = biome;
     g_inward_tier[slot] = 0;
+    g_inw_vbo_dirty[slot] = 1;
 }
 
 FBW_VIS_DEFAULT void fbw_gl_push_inward_quad(int slot, int qidx, int packed4) {
@@ -1361,16 +1678,21 @@ FBW_VIS_DEFAULT void fbw_gl_push_inward_quad(int slot, int qidx, int packed4) {
     g_inward[slot][base + 1] = (uint8_t)((u >> 8) & 0xffu);
     g_inward[slot][base + 2] = (uint8_t)((u >> 16) & 0xffu);
     g_inward[slot][base + 3] = (uint8_t)((u >> 24) & 0xffu);
+    g_inw_vbo_dirty[slot] = 1;
 }
 
 FBW_VIS_DEFAULT void fbw_gl_set_l1_inward_meta(int slot, int valid, int bx, int by, int bz, int biome) {
     if (slot < 0 || slot >= MAX_L1_INWARD_SLOTS) return;
+    if (g_l1_inward_valid[slot] != valid || g_l1_inward_bx[slot] != bx || g_l1_inward_by[slot] != by || g_l1_inward_bz[slot] != bz) {
+        g_shell_dirty = 1;
+    }
     g_l1_inward_valid[slot] = valid;
     g_l1_inward_bx[slot] = bx;
     g_l1_inward_by[slot] = by;
     g_l1_inward_bz[slot] = bz;
     g_l1_inward_biome[slot] = biome;
     g_l1_inward_tier[slot] = 0;
+    g_l1_inw_vbo_dirty[slot] = 1;
 }
 
 FBW_VIS_DEFAULT void fbw_gl_push_l1_inward_quad(int slot, int qidx, int packed4) {
@@ -1381,6 +1703,7 @@ FBW_VIS_DEFAULT void fbw_gl_push_l1_inward_quad(int slot, int qidx, int packed4)
     g_l1_inward[slot][base + 1] = (uint8_t)((u >> 8) & 0xffu);
     g_l1_inward[slot][base + 2] = (uint8_t)((u >> 16) & 0xffu);
     g_l1_inward[slot][base + 3] = (uint8_t)((u >> 24) & 0xffu);
+    g_l1_inw_vbo_dirty[slot] = 1;
 }
 
 FBW_VIS_DEFAULT void fbw_gl_set_lod_config(int disable_lod, int lod_dist_level) {
@@ -1475,13 +1798,18 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
         }
     }
 
-    if (g_chunks_dirty || g_inward_dirty) {
+    if (g_chunks_dirty || g_shell_dirty || g_inward_dirty) {
         double ox[MAX_PARENTS], oy[MAX_PARENTS], oz[MAX_PARENTS];
         compute_parent_origins(ox, oy, oz);
         if (g_chunks_dirty) {
             rebuild_macro_bands(ox, oy, oz);
         }
-        rebuild_band1_mesh(ox, oy, oz);
+        if (g_chunks_dirty || g_shell_dirty) {
+            rebuild_band1_shell(ox, oy, oz);
+        }
+        if (g_chunks_dirty || g_inward_dirty) {
+            rebuild_dirty_inward_slots(ox, oy, oz);
+        }
         g_chunks_dirty = 0;
         g_inward_dirty = 0;
     }
@@ -1492,9 +1820,19 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
     float time_s = (float)g_anim_ms * 0.001f;
     float star = (g_biome == 0 || g_biome == 1 || g_biome == 6 || g_biome == 7) ? 1.0f : 0.0f;
 
+    float aspect = (float)g_vp_w / (float)g_vp_h;
+    float cp = cosf(g_pitch), sp = sinf(g_pitch);
+    float cy = cosf(g_yaw),   sy = sinf(g_yaw);
+    float cr = cosf(g_roll),  sr = sinf(g_roll);
+    float fx = cp * cy, fy = sp, fz = cp * sy;
+    float rx0 = -sy, rz0 = cy;
+    float ux0 = -sp * cy, uy0 = cp, uz0 = -sp * sy;
+    float rx = rx0 * cr + ux0 * sr, ry = uy0 * sr, rz = rz0 * cr + uz0 * sr;
+    float ux = ux0 * cr - rx0 * sr, uy = uy0 * cr, uz = uz0 * cr - rz0 * sr;
+
     glViewport(0, 0, g_vp_w, g_vp_h);
 
-    // 1. Sky dome pass (no depth write)
+    // 1. 3D-projected Sky dome pass (no depth write, zero +/-PI wrap seam)
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
     glDisable(GL_CULL_FACE);
@@ -1505,8 +1843,10 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
     glUniform3f(g_u_sky_bot, br, bg, bb);
     glUniform1f(g_u_sky_star, star);
     glUniform1f(g_u_sky_time, time_s);
-    glUniform1f(g_u_sky_yaw, g_yaw);
-    glUniform1f(g_u_sky_pitch, g_pitch);
+    glUniform3f(g_u_sky_fwd, fx, fy, fz);
+    glUniform3f(g_u_sky_right, rx, ry, rz);
+    glUniform3f(g_u_sky_up, ux, uy, uz);
+    glUniform1f(g_u_sky_aspect, aspect);
 
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo_sky);
     glEnableVertexAttribArray(0);
@@ -1521,7 +1861,6 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
 
-    float aspect = (float)g_vp_w / (float)g_vp_h;
     float fog_r = br * 0.7f + tr * 0.3f;
     float fog_g = bg * 0.7f + tg * 0.3f;
     float fog_b = bb * 0.7f + tb * 0.3f;
@@ -1574,16 +1913,28 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
         draw_vert_buffer(g_vbo_band2, g_band2_cnt);
     }
 
-    // 4. Band 1: Active 1x + Inward 1/16x LOD + Layer 1 (16x) + Entities
+    // 4. Band 1: Active 1x + 10 Neighbors + Per-Slot Inward 1/16x LOD + Layer 1 (16x) + Entities
     glClear(GL_DEPTH_BUFFER_BIT);
-    build_mvp_band(mvp, aspect, g_cam_x, g_cam_y, g_cam_z, 0.06f, 1200.0f);
+    build_mvp_band(mvp, aspect, g_cam_x, g_cam_y, g_cam_z, 0.15f, 420.0f);
     glUniformMatrix4fv(g_u_mvp, 1, GL_FALSE, mvp);
     glUniform3f(g_u_cam, g_cam_x, g_cam_y, g_cam_z);
-    glUniform2f(g_u_fog_params, 28.0f, 240.0f);
-    glUniform1f(g_u_fog_max, 0.66f);
+    glUniform2f(g_u_fog_params, 32.0f, 260.0f);
+    glUniform1f(g_u_fog_max, 0.64f);
 
     if (g_band1_cnt > 0) {
         draw_vert_buffer(g_vbo_band1, g_band1_cnt);
+    }
+    for (int si = 0; si < MAX_INWARD_SLOTS; si++) {
+        if (g_inward_valid[si] && g_inw_vcnt[si] > 0) {
+            draw_vert_buffer(g_inw_vbos[si], g_inw_vcnt[si]);
+        }
+    }
+    if (g_parent_valid[0]) {
+        for (int si = 0; si < MAX_L1_INWARD_SLOTS; si++) {
+            if (g_l1_inward_valid[si] && g_l1_inw_vcnt[si] > 0) {
+                draw_vert_buffer(g_l1_inw_vbos[si], g_l1_inw_vcnt[si]);
+            }
+        }
     }
 
     if (g_dyn_vert_cnt > 0) {

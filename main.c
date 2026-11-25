@@ -73,7 +73,27 @@ static int g_sound_ready = 0;
 #define CLICK_RATE     44100
 #define CLICK_MS       60
 #define CLICK_SAMPLES  (CLICK_RATE * CLICK_MS / 1000)
-static short g_click_pcm[CLICK_SAMPLES];
+#define SFX_COUNT      8
+#define SFX_MAX_MS     220
+#define SFX_MAX_SAMP   (CLICK_RATE * SFX_MAX_MS / 1000)
+
+static short g_sfx_pcm[SFX_COUNT][SFX_MAX_SAMP];
+static int g_sfx_len[SFX_COUNT] = {
+    CLICK_RATE * 60 / 1000,   // 0: SFX_CLICK
+    CLICK_RATE * 90 / 1000,   // 1: SFX_PLASMA
+    CLICK_RATE * 130 / 1000,  // 2: SFX_LASER
+    CLICK_RATE * 220 / 1000,  // 3: SFX_EXPLODE
+    CLICK_RATE * 200 / 1000,  // 4: SFX_WARP
+    CLICK_RATE * 120 / 1000,  // 5: SFX_PICKUP
+    CLICK_RATE * 140 / 1000,  // 6: SFX_HURT
+    CLICK_RATE * 200 / 1000   // 7: SFX_EMP
+};
+
+static short clamp_pcm(double v) {
+    if (v > 32000.0) return 32000;
+    if (v < -32000.0) return -32000;
+    return (short)v;
+}
 
 static void sound_init(void) {
     SLEngineItf engine = NULL;
@@ -112,26 +132,113 @@ static void sound_init(void) {
     r = (*g_sl_player_obj)->GetInterface(g_sl_player_obj, SL_IID_BUFFERQUEUE, &g_sl_queue);
     if (r != SL_RESULT_SUCCESS) return;
 
-    // 60ms click: 1800 Hz sine, exponential decay, 1ms attack ramp (no pop)
-    for (int i = 0; i < CLICK_SAMPLES; i++) {
+    unsigned int rng = 0x13579BDFu;
+    double lp = 0.0;
+    double ph_plasma = 0.0;
+    double ph_laser = 0.0;
+    double ph_warp = 0.0;
+    double ph_emp = 0.0;
+
+    for (int i = 0; i < SFX_MAX_SAMP; i++) {
         double t = (double)i / CLICK_RATE;
-        double env = exp(-t * 55.0);
         double att = (i < 44) ? ((double)i / 44.0) : 1.0;
-        double s = sin(2.0 * M_PI * 1800.0 * t) * env * att;
-        g_click_pcm[i] = (short)(s * 12000.0);
+
+        // 0: SFX_CLICK (60ms tactile 1800 Hz UI click)
+        if (i < g_sfx_len[0]) {
+            double env = exp(-t * 55.0);
+            double s = sin(2.0 * M_PI * 1800.0 * t) * env * att;
+            g_sfx_pcm[0][i] = clamp_pcm(s * 12000.0);
+        }
+
+        // 1: SFX_PLASMA (90ms swept 980 -> 320 Hz crisp blaster)
+        if (i < g_sfx_len[1]) {
+            double p = (double)i / (double)g_sfx_len[1];
+            double freq = 980.0 - 660.0 * p;
+            ph_plasma += 2.0 * M_PI * freq / CLICK_RATE;
+            double env = exp(-t * 28.0) * (1.0 - p * 0.25);
+            double s = (sin(ph_plasma) + 0.35 * sin(2.0 * ph_plasma)) * env * att;
+            g_sfx_pcm[1][i] = clamp_pcm(s * 11500.0);
+        }
+
+        // 2: SFX_LASER (130ms resonant swept FM 640 -> 1520 Hz beam)
+        if (i < g_sfx_len[2]) {
+            double p = (double)i / (double)g_sfx_len[2];
+            double freq = 640.0 + 880.0 * p;
+            ph_laser += 2.0 * M_PI * freq / CLICK_RATE;
+            double mod = sin(2.0 * M_PI * 95.0 * t) * 0.7;
+            double env = exp(-t * 16.0);
+            double s = sin(ph_laser + mod) * env * att;
+            g_sfx_pcm[2][i] = clamp_pcm(s * 12000.0);
+        }
+
+        // 3: SFX_EXPLODE (220ms low-pass noise + sub-bass thump)
+        rng = rng * 1664525u + 1013904223u;
+        double wn = ((double)((int)(rng >> 16) & 0x7FFF) / 16384.0) - 1.0;
+        lp = lp * 0.86 + wn * 0.14;
+        if (i < g_sfx_len[3]) {
+            double p = (double)i / (double)g_sfx_len[3];
+            double env = exp(-t * 12.5);
+            double sub = sin(2.0 * M_PI * (96.0 - 54.0 * p) * t);
+            double s = (lp * 1.45 + sub * 0.65) * env * att;
+            g_sfx_pcm[3][i] = clamp_pcm(s * 15000.0);
+        }
+
+        // 4: SFX_WARP (200ms fractal scale harmonic 320 -> 960 Hz)
+        if (i < g_sfx_len[4]) {
+            double p = (double)i / (double)g_sfx_len[4];
+            double freq = 320.0 + 640.0 * sin(p * M_PI * 0.85);
+            ph_warp += 2.0 * M_PI * freq / CLICK_RATE;
+            double env = sin(p * M_PI) * exp(-t * 4.5);
+            double s = (sin(ph_warp) + 0.5 * sin(1.5 * ph_warp)) * env * att;
+            g_sfx_pcm[4][i] = clamp_pcm(s * 12500.0);
+        }
+
+        // 5: SFX_PICKUP (120ms bright dual-tone chime 880 -> 1320 Hz)
+        if (i < g_sfx_len[5]) {
+            double f = (i < g_sfx_len[5] / 2) ? 880.0 : 1320.0;
+            double env = exp(-t * 19.0);
+            double s = (sin(2.0 * M_PI * f * t) + 0.3 * sin(4.0 * M_PI * f * t)) * env * att;
+            g_sfx_pcm[5][i] = clamp_pcm(s * 11500.0);
+        }
+
+        // 6: SFX_HURT (140ms harsh low crunch 190 -> 88 Hz)
+        if (i < g_sfx_len[6]) {
+            double p = (double)i / (double)g_sfx_len[6];
+            double freq = 190.0 - 102.0 * p;
+            double w = sin(2.0 * M_PI * freq * t) + 0.6 * lp;
+            double env = exp(-t * 17.0);
+            double s = tanh(w * 1.8) * env * att;
+            g_sfx_pcm[6][i] = clamp_pcm(s * 13500.0);
+        }
+
+        // 7: SFX_EMP (200ms shimmering ring-mod zap 520 -> 140 Hz)
+        if (i < g_sfx_len[7]) {
+            double p = (double)i / (double)g_sfx_len[7];
+            double freq = 520.0 - 380.0 * p;
+            ph_emp += 2.0 * M_PI * freq / CLICK_RATE;
+            double ring = sin(2.0 * M_PI * 46.0 * t);
+            double env = exp(-t * 11.0);
+            double s = sin(ph_emp) * (0.4 + 0.6 * ring) * env * att;
+            g_sfx_pcm[7][i] = clamp_pcm(s * 13000.0);
+        }
     }
     g_sound_ready = 1;
 }
 
-void sound_click(void) {
+__attribute__((visibility("default"))) void fbw_sound_fx(int kind) {
     if (!g_sound_ready) return;
+    if (kind < 0 || kind >= SFX_COUNT) kind = 0;
     if (g_sl_queue) {
         (*g_sl_queue)->Clear(g_sl_queue);
-        (*g_sl_queue)->Enqueue(g_sl_queue, g_click_pcm, sizeof(g_click_pcm));
+        (*g_sl_queue)->Enqueue(g_sl_queue, g_sfx_pcm[kind], (SLuint32)(g_sfx_len[kind] * (int)sizeof(short)));
     }
     if (g_sl_play) {
         (*g_sl_play)->SetPlayState(g_sl_play, SL_PLAYSTATE_PLAYING);
     }
+}
+
+void sound_click(void) {
+    fbw_sound_fx(0);
 }
 
 static struct timespec g_boot_ts;
@@ -148,12 +255,6 @@ __attribute__((visibility("default"))) int fbw_now_ms(void) {
     long sec = (long)(now.tv_sec - g_boot_ts.tv_sec);
     long nsec = (long)(now.tv_nsec - g_boot_ts.tv_nsec);
     return (int)(sec * 1000L + nsec / 1000000L);
-}
-
-__attribute__((visibility("default"))) void fbw_sound_fx(int kind) {
-    // Reuse low-latency OpenSLES click synthesizer with safe non-blocking trigger
-    (void)kind;
-    sound_click();
 }
 
 // Safely switch Android NativeActivity orientation via JNI:
