@@ -1252,7 +1252,9 @@ fn draw_mobile_hud(w: i32, h: i32) {
     var n2: i32 = 0;
     buf_str(b2, n2, biome_name(cur_biome()));
     buf_str(b2, n2, " LVL "); buf_int(b2, n2, st.depth);
-    buf_str(b2, n2, " FPS "); buf_int(b2, n2, st.fps);
+    buf_str(b2, n2, " Lv"); buf_int(b2, n2, st.level);
+    buf_str(b2, n2, " XP"); buf_int(b2, n2, (st.xp * 100) / xp_to_next(st.level));
+    buf_str(b2, n2, "% FPS "); buf_int(b2, n2, st.fps);
     buf_str(b2, n2, " "); buf_pad2(b2, n2, pt_min); buf_str(b2, n2, ":"); buf_pad2(b2, n2, pt_rem);
     if st.dps_val > 0 { buf_str(b2, n2, " DPS "); buf_int(b2, n2, st.dps_val); }
     if st.quasar_drive_ms > 0 { buf_str(b2, n2, " [QSR]"); }
@@ -1577,32 +1579,53 @@ fn draw_mobile_modal(w: i32, h: i32) {
     fbw_box(mx, my, mx + mw, my + mh, 0x0B1220F2, 0x38BDF8FF);
 
     if st.screen == SCREEN_BUY {
+        // Authentic buy menu (Xar manual 8.4)
         set_color(0x4ADE80FF);
         fbw_text(mx + 22, my + 14, "BUY STATION - TAP ITEM TO PURCHASE", 3);
-        draw_modal_row_h(mx, my + 48,  mw, 34, "[1] +50 Health (15g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row_h(mx, my + 86,  mw, 34, "[2] +50 Armor (20g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row_h(mx, my + 124, mw, 34, "[3] Cannon + Laser + Minigun (25g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row_h(mx, my + 162, mw, 34, "[4] Rocket + Homing + Rail + EMP (40g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row_h(mx, my + 200, mw, 34, "[5] Nuke + Dark Hole (60g)", 0x1E293BFF, 0xFACC15FF);
-        draw_modal_row_h(mx, my + 238, mw, 34, "[6] +1 Vault Key (50g)", 0x1E293BFF, 0xFACC15FF);
-        draw_modal_row_h(mx, my + 276, mw, 34, "[7] +50 Shields (15g)", 0x1E293BFF, 0x38BDF8FF);
-        draw_modal_row_h(mx, my + 314, mw, 34, "[8] Capacitor +35% Max Ammo (35g)", 0x1E293BFF, 0x4ADE80FF);
+        draw_modal_row_h(mx, my + 48,  mw, 34, "[1] 20 Cannon ammo (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 88,  mw, 34, "[2] 100 Laser ammo (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 128, mw, 34, "[3] 50 Rocket ammo (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 168, mw, 34, "[4] 1000 Homing ammo (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 208, mw, 34, "[5] 100 Minigun ammo (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 248, mw, 34, "[6] 20 Railgun ammo (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 288, mw, 34, "[7] 1 EMP charge (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 328, mw, 34, "[8] 200% Health (100g)", 0x1E293BFF, 0x4ADE80FF);
+        draw_modal_row_h(mx, my + 368, mw, 34, "[9] 100% Armor (100g)", 0x1E293BFF, 0x38BDF8FF);
+        draw_modal_row_h(mx, my + 408, mw, 34, "[10] 150% Armor (150g)", 0x1E293BFF, 0x38BDF8FF);
+        draw_modal_row_h(mx, my + 448, mw, 34, "[11] 200% Armor (200g)", 0x1E293BFF, 0x38BDF8FF);
         draw_modal_row(mx, my + mh - 60, mw, "CLOSE STATION", 0x334155FF, 0x38BDF8FF);
+    } else if st.screen == SCREEN_UPGRADE {
+        // Upgrade Station (Xar manual 8.6) - the main gold sink; weapon damage
+        // purchases also unlock that weapon.
+        set_color(0xFF8C28FF);
+        fbw_text(mx + 22, my + 14, "UPGRADE STATION - SPEND GOLD, GET STRONGER", 3);
+        draw_modal_row_h(mx, my + 48,  mw, 34, "[1] Plasma damage (100g)", 0x1E293BFF, 0x38BDF8FF);
+        draw_modal_row_h(mx, my + 88,  mw, 34, "[2] Cannon damage (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 128, mw, 34, "[3] Laser damage (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 168, mw, 34, "[4] Rocket damage (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 208, mw, 34, "[5] Railgun damage (200g)", 0x1E293BFF, 0xFACC15FF);
+        draw_modal_row_h(mx, my + 248, mw, 34, "[6] EMP damage (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row_h(mx, my + 288, mw, 34, "[7] Nuke damage (200g)", 0x1E293BFF, 0xFACC15FF);
+        draw_modal_row_h(mx, my + 328, mw, 34, "[8] Dark Hole damage (300g)", 0x1E293BFF, 0xE879F9FF);
+        draw_modal_row_h(mx, my + 368, mw, 34, "[9] Health capacity (200g)", 0x1E293BFF, 0x4ADE80FF);
+        draw_modal_row_h(mx, my + 408, mw, 34, "[10] Health regen (100g)", 0x1E293BFF, 0x4ADE80FF);
+        draw_modal_row(mx, my + mh - 60, mw, "CLOSE STATION", 0x334155FF, 0xFF8C28FF);
     } else if st.screen == SCREEN_SELL {
         set_color(0xFACC15FF);
         fbw_text(mx + 22, my + 16, "SELL STATION - CONVERT SURPLUS TO GOLD", 3);
-        draw_modal_row(mx, my + 64,  mw, "[1] Sell 25 Health -> +20 Gold", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 120, mw, "[2] Sell 25 Armor -> +18 Gold", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 176, mw, "[3] Sell 50 Minigun Ammo -> +15 Gold", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 232, mw, "[4] Sell 1 Vault Key -> +40 Gold", 0x1E293BFF, 0xFACC15FF);
+        draw_modal_row(mx, my + 64,  mw, "[1] Sell 100 Laser ammo -> +40 Gold", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 108, mw, "[2] Sell 50 Cannon ammo -> +40 Gold", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 152, mw, "[3] Sell 50 Rocket ammo -> +40 Gold", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 196, mw, "[4] Sell 200 Minigun ammo -> +40 Gold", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 240, mw, "[5] Sell 20 Railgun slugs -> +60 Gold", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 284, mw, "[6] Sell 1 Nuke -> +80 Gold", 0x1E293BFF, 0xFACC15FF);
         draw_modal_row(mx, my + mh - 60, mw, "CLOSE STATION", 0x334155FF, 0x38BDF8FF);
     } else if st.screen == SCREEN_BLACK_MARKET {
         set_color(0xE879F9FF);
         fbw_text(mx + 22, my + 16, "BLACK MARKET - RARE MUNITIONS", 3);
-        draw_modal_row(mx, my + 64,  mw, "[1] +12 Railgun Slugs (20g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 120, mw, "[2] +8 EMP Charges (18g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 176, mw, "[3] +3 Nukes (30g)", 0x1E293BFF, 0xFFFFFFFF);
-        draw_modal_row(mx, my + 232, mw, "[4] +3 Dark Holes (35g)", 0x1E293BFF, 0xFACC15FF);
+        draw_modal_row(mx, my + 64,  mw, "[1] 50 Railgun ammo (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 120, mw, "[2] 2 EMP charges (100g)", 0x1E293BFF, 0xFFFFFFFF);
+        draw_modal_row(mx, my + 176, mw, "[3] 2 Nukes (100g)", 0x1E293BFF, 0xFACC15FF);
         draw_modal_row(mx, my + mh - 60, mw, "CLOSE BLACK MARKET", 0x334155FF, 0x38BDF8FF);
     } else if st.screen == SCREEN_TOME {
         set_color(0x38BDF8FF);
@@ -1643,9 +1666,10 @@ fn draw_mobile_modal(w: i32, h: i32) {
             fbw_text(mx + 22, my + 88, "1. Every block contains a 16x16x16 universe inside.", 2);
             fbw_text(mx + 22, my + 116, "2. Tap SHRK or fly into Green/Pink rings to dive 16x/256x.", 2);
             fbw_text(mx + 22, my + 144, "3. Tap GROW or Red rings / fly out bounds to grow 16x.", 2);
-            fbw_text(mx + 22, my + 172, "4. Short Marker [MRK] costs 5g past LVL 0; Plasma clears it.", 2);
+            fbw_text(mx + 22, my + 172, "4. Short Marker [MRK] costs 10g past LVL 0; Plasma clears it.", 2);
             fbw_text(mx + 22, my + 200, "5. Tap [MOD] or active weapon slot to switch firing modes.", 2);
             fbw_text(mx + 22, my + 228, "6. Defeat The Singularity Boss in Inner Core to free 'K'!", 2);
+            fbw_text(mx + 22, my + 256, "7. Spend gold at Upgrade Stations; dying loses armor & ammo!", 2);
         } else if st.screen == SCREEN_INFO_F2 {
             set_color(0x38BDF8FF);
             fbw_text(mx + 22, my + 54, "ARSENAL (TAP TO EQUIP / CYCLE FIRING MODE)", 2);
@@ -1681,6 +1705,7 @@ fn draw_mobile_modal(w: i32, h: i32) {
             var sb: u8[160] = [0; 160];
             var sn: i32 = 0;
             buf_str(sb, sn, "PROGRESS: KILLS "); buf_int(sb, sn, st.kills);
+            buf_str(sb, sn, "  Lv"); buf_int(sb, sn, st.level);
             buf_str(sb, sn, "  XP "); buf_int(sb, sn, st.score_xp);
             buf_str(sb, sn, "  TROPHIES "); buf_int(sb, sn, st.trophies);
             buf_str(sb, sn, "/7  DEATHS "); buf_int(sb, sn, st.deaths);
@@ -1805,8 +1830,8 @@ fn handle_modal_tap(x: i32, y: i32) {
 
     if st.screen == SCREEN_BUY {
         var r: i32 = 0;
-        while r < 8 {
-            let ry = my + 48 + r * 38;
+        while r < 11 {
+            let ry = my + 48 + r * 40;
             if y >= ry && y <= ry + 34 {
                 handle_buy_action(r + 1);
                 drain_pending_sfx();
@@ -1814,11 +1839,22 @@ fn handle_modal_tap(x: i32, y: i32) {
             }
             r = r + 1;
         }
+    } else if st.screen == SCREEN_UPGRADE {
+        var r: i32 = 0;
+        while r < 10 {
+            let ry = my + 48 + r * 40;
+            if y >= ry && y <= ry + 34 {
+                handle_upgrade_action(r + 1);
+                drain_pending_sfx();
+                return;
+            }
+            r = r + 1;
+        }
     } else if st.screen == SCREEN_SELL {
         var r: i32 = 0;
-        while r < 4 {
-            let ry = my + 64 + r * 56;
-            if y >= ry && y <= ry + 46 {
+        while r < 6 {
+            let ry = my + 64 + r * 44;
+            if y >= ry && y <= ry + 40 {
                 handle_sell_action(r + 1);
                 drain_pending_sfx();
                 return;
