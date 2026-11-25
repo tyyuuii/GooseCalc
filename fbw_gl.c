@@ -670,6 +670,20 @@ static inline uint8_t neighbor_at_offset(int ox, int oy, int oz, int lx, int ly,
     return BLK_AIR;
 }
 
+static inline int is_l1_covered_by_neighbor(int x, int y, int z) {
+    if (!g_parent_valid[0]) return 0;
+    int dx = x - g_parent_bx[0];
+    int dy = y - g_parent_by[0];
+    int dz = z - g_parent_bz[0];
+    for (int nb = 0; nb < MAX_NEIGHBORS; nb++) {
+        if (g_neighbor_valid[nb] &&
+            g_neighbor_dx[nb] == dx && g_neighbor_dy[nb] == dy && g_neighbor_dz[nb] == dz) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static inline uint8_t chunk_at(int layer, int x, int y, int z) {
     if (x >= 0 && x < 16 && y >= 0 && y < 16 && z >= 0 && z < 16) {
         return g_chunks[layer][(y << 8) | (z << 4) | x];
@@ -694,6 +708,9 @@ static inline int nb_chunk_occ(int nb_slot, int x, int y, int z) {
     int wx = g_neighbor_dx[nb_slot] * 16 + x;
     int wy = g_neighbor_dy[nb_slot] * 16 + y;
     int wz = g_neighbor_dz[nb_slot] * 16 + z;
+    if (wx >= 0 && wx < 16 && wy >= 0 && wy < 16 && wz >= 0 && wz < 16) {
+        if (g_inward_grid[(wy << 8) | (wz << 4) | wx] >= 0) return 0;
+    }
     return chunk_at(0, wx, wy, wz) != BLK_AIR ? 1 : 0;
 }
 
@@ -714,6 +731,9 @@ static inline int inward_occ(int layer, int slot, int lx, int ly, int lz,
     int nz = lz + (iz < 0 ? -1 : (iz >= 16 ? 1 : 0));
     if (skip_hole && nx == hole_x && ny == hole_y && nz == hole_z) {
         return 0;
+    }
+    if (layer == 1 && skip_hole && nx >= 0 && nx < 16 && ny >= 0 && ny < 16 && nz >= 0 && nz < 16) {
+        if (is_l1_covered_by_neighbor(nx, ny, nz)) return 0;
     }
     uint8_t nb = chunk_at(layer, nx, ny, nz);
     if (nb == BLK_AIR) return 0;
@@ -784,6 +804,9 @@ static inline int pooled_occ(const uint8_t *pooled, int dim,
     int ny = ly + (py < 0 ? -1 : (py >= dim ? 1 : 0));
     int nz = lz + (pz < 0 ? -1 : (pz >= dim ? 1 : 0));
     if (skip_hole && nx == hole_x && ny == hole_y && nz == hole_z) return 0;
+    if (layer == 1 && skip_hole && nx >= 0 && nx < 16 && ny >= 0 && ny < 16 && nz >= 0 && nz < 16) {
+        if (is_l1_covered_by_neighbor(nx, ny, nz)) return 0;
+    }
     uint8_t nb = chunk_at(layer, nx, ny, nz);
     if (nb == BLK_AIR) return 0;
     if (nx >= 0 && nx < 16 && ny >= 0 && ny < 16 && nz >= 0 && nz < 16) {
@@ -1052,6 +1075,22 @@ static void mesh_neighbor_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_gro
     }
 }
 
+static inline int mesh_layer_occ(int layer, int x, int y, int z,
+                                 int hole_x, int hole_y, int hole_z, int skip_hole,
+                                 int skip_inward) {
+    if (skip_hole && x == hole_x && y == hole_y && z == hole_z) return 0;
+    if (layer == 1 && skip_hole && x >= 0 && x < 16 && y >= 0 && y < 16 && z >= 0 && z < 16) {
+        if (is_l1_covered_by_neighbor(x, y, z)) return 0;
+    }
+    if (skip_inward && (layer == 0 || layer == 1) &&
+        x >= 0 && x < 16 && y >= 0 && y < 16 && z >= 0 && z < 16) {
+        int slot = (layer == 0) ? g_inward_grid[(y << 8) | (z << 4) | x]
+                                : g_l1_inward_grid[(y << 8) | (z << 4) | x];
+        if (slot >= 0) return 0;
+    }
+    return chunk_occ(layer, x, y, z);
+}
+
 static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                           int layer, float scale, float ox, float oy, float oz,
                           int hole_x, int hole_y, int hole_z, int skip_hole,
@@ -1063,6 +1102,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                 uint8_t blk = g_chunks[layer][(y << 8) | (z << 4) | x];
                 if (blk == BLK_AIR) continue;
                 if (skip_hole && x == hole_x && y == hole_y && z == hole_z) continue;
+                if (layer == 1 && skip_hole && is_l1_covered_by_neighbor(x, y, z)) continue;
 
                 if (skip_inward && (layer == 0 || layer == 1)) {
                     int slot = (layer == 0) ? g_inward_grid[(y << 8) | (z << 4) | x]
@@ -1084,7 +1124,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                 float wz1 = wz0 + scale;
 
                 // +Y with smooth corner AO
-                if (!chunk_occ(layer, x, y + 1, z)) {
+                if (!mesh_layer_occ(layer, x, y + 1, z, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
                     float a0 = corner_ao(chunk_occ(layer, x - 1, y + 1, z),
                                          chunk_occ(layer, x, y + 1, z + 1),
                                          chunk_occ(layer, x - 1, y + 1, z + 1));
@@ -1101,7 +1141,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                                      1.05f * a0, 1.05f * a1, 1.05f * a2, 1.05f * a3, style, r, g, b, 255);
                 }
                 // -Y
-                if (!chunk_occ(layer, x, y - 1, z)) {
+                if (!mesh_layer_occ(layer, x, y - 1, z, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
                     float a0 = corner_ao(chunk_occ(layer, x - 1, y - 1, z),
                                          chunk_occ(layer, x, y - 1, z - 1),
                                          chunk_occ(layer, x - 1, y - 1, z - 1));
@@ -1118,7 +1158,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                                      0.60f * a0, 0.60f * a1, 0.60f * a2, 0.60f * a3, style, r, g, b, 255);
                 }
                 // +X
-                if (!chunk_occ(layer, x + 1, y, z)) {
+                if (!mesh_layer_occ(layer, x + 1, y, z, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
                     float a0 = corner_ao(chunk_occ(layer, x + 1, y - 1, z),
                                          chunk_occ(layer, x + 1, y, z + 1),
                                          chunk_occ(layer, x + 1, y - 1, z + 1));
@@ -1135,7 +1175,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                                      0.88f * a0, 0.88f * a1, 0.88f * a2, 0.88f * a3, style, r, g, b, 255);
                 }
                 // -X
-                if (!chunk_occ(layer, x - 1, y, z)) {
+                if (!mesh_layer_occ(layer, x - 1, y, z, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
                     float a0 = corner_ao(chunk_occ(layer, x - 1, y - 1, z),
                                          chunk_occ(layer, x - 1, y, z - 1),
                                          chunk_occ(layer, x - 1, y - 1, z - 1));
@@ -1152,7 +1192,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                                      0.76f * a0, 0.76f * a1, 0.76f * a2, 0.76f * a3, style, r, g, b, 255);
                 }
                 // +Z
-                if (!chunk_occ(layer, x, y, z + 1)) {
+                if (!mesh_layer_occ(layer, x, y, z + 1, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
                     float a0 = corner_ao(chunk_occ(layer, x - 1, y, z + 1),
                                          chunk_occ(layer, x, y - 1, z + 1),
                                          chunk_occ(layer, x - 1, y - 1, z + 1));
@@ -1169,7 +1209,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
                                      0.95f * a0, 0.95f * a1, 0.95f * a2, 0.95f * a3, style, r, g, b, 255);
                 }
                 // -Z
-                if (!chunk_occ(layer, x, y, z - 1)) {
+                if (!mesh_layer_occ(layer, x, y, z - 1, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
                     float a0 = corner_ao(chunk_occ(layer, x + 1, y, z - 1),
                                          chunk_occ(layer, x, y - 1, z - 1),
                                          chunk_occ(layer, x + 1, y - 1, z - 1));
@@ -1302,7 +1342,8 @@ static void rebuild_dirty_inward_slots(const double ox[MAX_PARENTS], const doubl
     float l1oy = g_parent_valid[0] ? (float)oy[0] : 0.0f;
     float l1oz = g_parent_valid[0] ? (float)oz[0] : 0.0f;
     for (si = 0; si < MAX_L1_INWARD_SLOTS; si++) {
-        if (!g_l1_inward_valid[si] || !g_parent_valid[0]) {
+        if (!g_l1_inward_valid[si] || !g_parent_valid[0] ||
+            is_l1_covered_by_neighbor(g_l1_inward_bx[si], g_l1_inward_by[si], g_l1_inward_bz[si])) {
             g_l1_inw_vcnt[si] = 0;
             g_l1_inw_vbo_dirty[si] = 0;
             continue;
@@ -1929,7 +1970,7 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
 
     // 4. Band 1: Active 1x + 10 Neighbors + Per-Slot Inward 1/16x LOD + Layer 1 (16x) + Entities
     glClear(GL_DEPTH_BUFFER_BIT);
-    build_mvp_band(mvp, aspect, g_cam_x, g_cam_y, g_cam_z, 0.15f, 420.0f);
+    build_mvp_band(mvp, aspect, g_cam_x, g_cam_y, g_cam_z, 0.08f, 280.0f);
     glUniformMatrix4fv(g_u_mvp, 1, GL_FALSE, mvp);
     glUniform3f(g_u_cam, g_cam_x, g_cam_y, g_cam_z);
     glUniform2f(g_u_fog_params, 32.0f, 260.0f);
@@ -1945,7 +1986,8 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
     }
     if (g_parent_valid[0]) {
         for (int si = 0; si < MAX_L1_INWARD_SLOTS; si++) {
-            if (g_l1_inward_valid[si] && g_l1_inw_vcnt[si] > 0) {
+            if (g_l1_inward_valid[si] && g_l1_inw_vcnt[si] > 0 &&
+                !is_l1_covered_by_neighbor(g_l1_inward_bx[si], g_l1_inward_by[si], g_l1_inward_bz[si])) {
                 draw_vert_buffer(g_l1_inw_vbos[si], g_l1_inw_vcnt[si]);
             }
         }

@@ -388,24 +388,46 @@ fn l1_blk_at(x: i32, y: i32, z: i32) -> u8 {
     return st.parent_blocks[(y << 8) | (z << 4) | x];
 }
 
+fn is_l1_covered_by_neighbor(x: i32, y: i32, z: i32, hx: i32, hy: i32, hz: i32) -> i32 {
+    let st = core();
+    let dx = x - hx;
+    let dy = y - hy;
+    let dz = z - hz;
+    var nb: i32 = 0;
+    while nb < MAX_NEIGHBORS {
+        if st.neighbor_valid[nb] != 0 &&
+           st.neighbor_dx[nb] == dx && st.neighbor_dy[nb] == dy && st.neighbor_dz[nb] == dz {
+            return 1;
+        }
+        nb = nb + 1;
+    }
+    return 0;
+}
+
 fn layer1_block_exposed(x: i32, y: i32, z: i32, hx: i32, hy: i32, hz: i32) -> i32 {
     if x < 15 {
-        if l1_blk_at(x + 1, y, z) == BLK_AIR || (x + 1 == hx && y == hy && z == hz) { return 2; }
+        if l1_blk_at(x + 1, y, z) == BLK_AIR || (x + 1 == hx && y == hy && z == hz) ||
+           is_l1_covered_by_neighbor(x + 1, y, z, hx, hy, hz) != 0 { return 2; }
     }
     if x > 0 {
-        if l1_blk_at(x - 1, y, z) == BLK_AIR || (x - 1 == hx && y == hy && z == hz) { return 2; }
+        if l1_blk_at(x - 1, y, z) == BLK_AIR || (x - 1 == hx && y == hy && z == hz) ||
+           is_l1_covered_by_neighbor(x - 1, y, z, hx, hy, hz) != 0 { return 2; }
     }
     if y < 15 {
-        if l1_blk_at(x, y + 1, z) == BLK_AIR || (x == hx && y + 1 == hy && z == hz) { return 2; }
+        if l1_blk_at(x, y + 1, z) == BLK_AIR || (x == hx && y + 1 == hy && z == hz) ||
+           is_l1_covered_by_neighbor(x, y + 1, z, hx, hy, hz) != 0 { return 2; }
     }
     if y > 0 {
-        if l1_blk_at(x, y - 1, z) == BLK_AIR || (x == hx && y - 1 == hy && z == hz) { return 2; }
+        if l1_blk_at(x, y - 1, z) == BLK_AIR || (x == hx && y - 1 == hy && z == hz) ||
+           is_l1_covered_by_neighbor(x, y - 1, z, hx, hy, hz) != 0 { return 2; }
     }
     if z < 15 {
-        if l1_blk_at(x, y, z + 1) == BLK_AIR || (x == hx && y == hy && z + 1 == hz) { return 2; }
+        if l1_blk_at(x, y, z + 1) == BLK_AIR || (x == hx && y == hy && z + 1 == hz) ||
+           is_l1_covered_by_neighbor(x, y, z + 1, hx, hy, hz) != 0 { return 2; }
     }
     if z > 0 {
-        if l1_blk_at(x, y, z - 1) == BLK_AIR || (x == hx && y == hy && z - 1 == hz) { return 2; }
+        if l1_blk_at(x, y, z - 1) == BLK_AIR || (x == hx && y == hy && z - 1 == hz) ||
+           is_l1_covered_by_neighbor(x, y, z - 1, hx, hy, hz) != 0 { return 2; }
     }
     if x == 0 || x == 15 || y == 0 || y == 15 || z == 0 || z == 15 { return 1; }
     return 0;
@@ -504,6 +526,7 @@ fn sync_inward_to_gl() {
                 let nblk = l1_blk_at(ox, oy, oz);
                 let nseed = resolve_child_frame_seed(l1_seed, l1_depth, ox, oy, oz, nblk);
                 if l1_v == 0 || (ox == l1_hx && oy == l1_hy && oz == l1_hz) ||
+                   is_l1_covered_by_neighbor(ox, oy, oz, l1_hx, l1_hy, l1_hz) != 0 ||
                    nblk == BLK_AIR || is_block_subdivisible(nblk) == 0 ||
                    nblk != g_mob.l1_inw_blk[rs] || nseed != g_mob.l1_inw_seed[rs] {
                     let oidx = (oy << 8) | (oz << 4) | ox;
@@ -619,7 +642,8 @@ fn sync_inward_to_gl() {
             while z < 16 {
                 var x: i32 = 0;
                 while x < 16 {
-                    if !(x == hx && y == hy && z == hz) {
+                    if !(x == hx && y == hy && z == hz) &&
+                       is_l1_covered_by_neighbor(x, y, z, hx, hy, hz) == 0 {
                         let blk = l1_blk_at(x, y, z);
                         if blk != BLK_AIR && is_block_subdivisible(blk) != 0 {
                             let exp = layer1_block_exposed(x, y, z, hx, hy, hz);

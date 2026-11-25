@@ -2493,7 +2493,29 @@ fn shrink_into_ex(bx: i32, by: i32, bz: i32, target_blk: u8, forced_biome: i32, 
             if point_collides(new_px, new_py, new_pz) != 0 {
                 new_px = 8.0; new_py = 3.2; new_pz = 6.5;
                 if point_collides(new_px, new_py, new_pz) != 0 {
-                    new_px = 8.0; new_py = 8.0; new_pz = 8.0;
+                    new_px = 8.5; new_py = 9.5; new_pz = 8.5;
+                }
+                if point_collides(new_px, new_py, new_pz) != 0 {
+                    var found_clr: i32 = 0;
+                    var cy_c: i32 = 2;
+                    while cy_c <= 13 && found_clr == 0 {
+                        var cz_c: i32 = 2;
+                        while cz_c <= 13 && found_clr == 0 {
+                            var cx_c: i32 = 2;
+                            while cx_c <= 13 && found_clr == 0 {
+                                let tx = (cx_c as f64) + 0.5;
+                                let ty = (cy_c as f64) + 0.5;
+                                let tz = (cz_c as f64) + 0.5;
+                                if point_collides(tx, ty, tz) == 0 {
+                                    new_px = tx; new_py = ty; new_pz = tz;
+                                    found_clr = 1;
+                                }
+                                cx_c = cx_c + 1;
+                            }
+                            cz_c = cz_c + 1;
+                        }
+                        cy_c = cy_c + 1;
+                    }
                 }
             }
         }
@@ -2604,6 +2626,28 @@ fn grow_out_axis(exit_x: f64, exit_y: f64, exit_z: f64) {
         st.px = 8.5;
         st.py = 11.5;
         st.pz = 8.5;
+        if point_collides(st.px, st.py, st.pz) != 0 {
+            var found_g: i32 = 0;
+            var cy_g: i32 = 2;
+            while cy_g <= 13 && found_g == 0 {
+                var cz_g: i32 = 2;
+                while cz_g <= 13 && found_g == 0 {
+                    var cx_g: i32 = 2;
+                    while cx_g <= 13 && found_g == 0 {
+                        let tx = (cx_g as f64) + 0.5;
+                        let ty = (cy_g as f64) + 0.5;
+                        let tz = (cz_g as f64) + 0.5;
+                        if point_collides(tx, ty, tz) == 0 {
+                            st.px = tx; st.py = ty; st.pz = tz;
+                            found_g = 1;
+                        }
+                        cx_g = cx_g + 1;
+                    }
+                    cz_g = cz_g + 1;
+                }
+                cy_g = cy_g + 1;
+            }
+        }
     }
 
     if was_air != 0 {
@@ -2832,7 +2876,7 @@ fn point_collides(x: f64, y: f64, z: f64) -> i32 {
                 let bx = ffloor(x + dx * rad);
                 let by = ffloor(y + dy * rad);
                 let bz = ffloor(z + dz * rad);
-                let blk = get_block(bx, by, bz);
+                let blk = world_block_rel(bx, by, bz);
                 if is_block_solid(blk) != 0 {
                     return 1;
                 }
@@ -2983,6 +3027,28 @@ fn scratch_point_collides(x: f64, y: f64, z: f64) -> i32 {
     return 0;
 }
 
+fn settle_post_cross_clearance(axis: i32) {
+    if point_collides(st.px, st.py, st.pz) == 0 { return; }
+    var tx = st.px;
+    var ty = st.py;
+    var tz = st.pz;
+    if axis != 0 {
+        if tx < 0.25 { tx = 0.26; }
+        else if tx > 15.75 { tx = 15.74; }
+    }
+    if axis != 1 {
+        if ty < 0.25 { ty = 0.26; }
+        else if ty > 15.75 { ty = 15.74; }
+    }
+    if axis != 2 {
+        if tz < 0.25 { tz = 0.26; }
+        else if tz > 15.75 { tz = 15.74; }
+    }
+    if point_collides(tx, ty, tz) == 0 {
+        st.px = tx; st.py = ty; st.pz = tz;
+    }
+}
+
 fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: f64) -> i32 {
     let sdx: i32 = if axis == 0 { sdir } else { 0 };
     let sdy: i32 = if axis == 1 { sdir } else { 0 };
@@ -3074,6 +3140,7 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
         st.px = nx_w;
         st.py = ny_w;
         st.pz = nz_w;
+        settle_post_cross_clearance(axis);
         return 1;
     }
 
@@ -3085,36 +3152,16 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
 
         if cur_d == st.depth {
             generate_chunk_blocks_to(5, st.depth, top_bio, tblk, top_seed, 0);
-            var hit_ok = if scratch_point_collides(nx_w, ny_w, nz_w) == 0 { 1 } else { 0 };
-            var adj_x = nx_w;
-            var adj_y = ny_w;
-            var adj_z = nz_w;
-            if hit_ok == 0 && mol_locked == 0 {
-                var ty_i: i32 = -1;
-                while ty_i <= 1 && hit_ok == 0 {
-                    var tx_i: i32 = -1;
-                    while tx_i <= 1 && hit_ok == 0 {
-                        let px_t = if axis == 0 { nx_w } else { fclamp(nx_w + (tx_i as f64) * 0.65, 0.35, 15.65) };
-                        let py_t = if axis == 1 { ny_w } else { fclamp(ny_w + (ty_i as f64) * 0.65, 0.35, 15.65) };
-                        let pz_t = if axis == 2 { nz_w } else { fclamp(nz_w + ((if axis == 0 { tx_i } else { ty_i }) as f64) * 0.65, 0.35, 15.65) };
-                        if scratch_point_collides(px_t, py_t, pz_t) == 0 {
-                            adj_x = px_t; adj_y = py_t; adj_z = pz_t;
-                            hit_ok = 1;
-                        }
-                        tx_i = tx_i + 1;
-                    }
-                    ty_i = ty_i + 1;
-                }
-            }
-            if hit_ok != 0 {
+            if scratch_point_collides(nx_w, ny_w, nz_w) == 0 {
                 set_frame(cur_d, ScaleFrame {
                     bx: target_bx, by: target_by, bz: target_bz,
                     biome: top_bio, parent_block: tblk, seed: top_seed
                 });
                 load_current_chunk();
-                st.px = adj_x;
-                st.py = adj_y;
-                st.pz = adj_z;
+                st.px = nx_w;
+                st.py = ny_w;
+                st.pz = nz_w;
+                settle_post_cross_clearance(axis);
                 st.flash_ms = 120;
                 st.flash_rgb = pack_rgb(40, 235, 130);
                 set_status_msg("Crossed into adjacent fractal chunk!", 1200);
@@ -3138,6 +3185,7 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
                 st.px = sx;
                 st.py = sy;
                 st.pz = sz;
+                settle_post_cross_clearance(axis);
                 st.ring_cd_ms = 180;
                 set_status_msg("ShrinkAny passed through solid wall!", 1400);
                 return 1;
@@ -3156,9 +3204,6 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
                 if rblk != BLK_AIR {
                     generate_chunk_blocks_to(5, wd - 1, rbio, rblk, rseed, rair);
                     rblk = dst_get_block(5, wbx, wby, wbz);
-                    if rblk != BLK_AIR && wd < st.depth {
-                        return 0;
-                    }
                 }
                 let nbio = resolve_child_frame_biome(rseed, wd - 1, rbio, wbx, wby, wbz, rblk, -1);
                 rseed = resolve_child_frame_seed(rseed, wd - 1, wbx, wby, wbz, rblk);
@@ -3167,28 +3212,8 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
                 wd = wd + 1;
             }
             generate_chunk_blocks_to(5, st.depth, rbio, rblk, rseed, rair);
-            var d_hit_ok = if scratch_point_collides(nx_w, ny_w, nz_w) == 0 { 1 } else { 0 };
-            var d_ax = nx_w;
-            var d_ay = ny_w;
-            var d_az = nz_w;
-            if d_hit_ok == 0 && mol_locked == 0 {
-                var ty_i: i32 = -1;
-                while ty_i <= 1 && d_hit_ok == 0 {
-                    var tx_i: i32 = -1;
-                    while tx_i <= 1 && d_hit_ok == 0 {
-                        let px_t = if axis == 0 { nx_w } else { fclamp(nx_w + (tx_i as f64) * 0.75, 0.35, 15.65) };
-                        let py_t = if axis == 1 { ny_w } else { fclamp(ny_w + (ty_i as f64) * 0.75, 0.35, 15.65) };
-                        let pz_t = if axis == 2 { nz_w } else { fclamp(nz_w + ((if axis == 0 { tx_i } else { ty_i }) as f64) * 0.75, 0.35, 15.65) };
-                        if scratch_point_collides(px_t, py_t, pz_t) == 0 {
-                            d_ax = px_t; d_ay = py_t; d_az = pz_t;
-                            d_hit_ok = 1;
-                        }
-                        tx_i = tx_i + 1;
-                    }
-                    ty_i = ty_i + 1;
-                }
-            }
-            if d_hit_ok != 0 {
+            let clear_dst = scratch_point_collides(nx_w, ny_w, nz_w) == 0;
+            if clear_dst || (st.shrink_any != 0 && st.ring_cd_ms <= 0) {
                 var cseed: u64 = top_seed;
                 var cbio: i32 = top_bio;
                 var cblk: u8 = tblk;
@@ -3218,9 +3243,22 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
                     wd = wd + 1;
                 }
                 load_current_chunk();
-                st.px = d_ax;
-                st.py = d_ay;
-                st.pz = d_az;
+                if clear_dst {
+                    st.px = nx_w;
+                    st.py = ny_w;
+                    st.pz = nz_w;
+                } else {
+                    var sx: f64 = 8.0;
+                    var sy: f64 = 8.0;
+                    var sz: f64 = 8.0;
+                    find_clear_air_pos(nx_w, ny_w, nz_w, sx, sy, sz);
+                    st.px = sx;
+                    st.py = sy;
+                    st.pz = sz;
+                    st.ring_cd_ms = 180;
+                    set_status_msg("ShrinkAny passed through solid wall!", 1400);
+                }
+                settle_post_cross_clearance(axis);
                 return 1;
             }
         }
@@ -3234,7 +3272,7 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
 
 fn move_player_vec(dx: f64, dy: f64, dz: f64) {
     let max_d = fmax(fabs(dx), fmax(fabs(dy), fabs(dz)));
-    let n_steps = clamp_i(((max_d / 0.18) as! i32) + 1, 1, 6);
+    let n_steps = clamp_i(((max_d / 0.18) as! i32) + 1, 1, 32);
     let sx = dx / (n_steps as f64);
     let sy = dy / (n_steps as f64);
     let sz = dz / (n_steps as f64);
@@ -3249,7 +3287,8 @@ fn move_player_vec(dx: f64, dy: f64, dz: f64) {
         if can_cross != 0 && (nx < 0.0 || nx >= 16.0) {
             let sdir: i32 = if nx < 0.0 { -1 } else { 1 };
             if step_air_single_axis(0, sdir, nx, st.py, st.pz) != 0 { return; }
-            st.px = fclamp(st.px, 0.25, 15.75);
+            let clx = fclamp(st.px, 0.25, 15.75);
+            if point_collides(clx, st.py, st.pz) == 0 { st.px = clx; }
             st.vx = 0.0;
         } else if point_collides(nx, st.py, st.pz) == 0 {
             st.px = nx;
@@ -3262,7 +3301,8 @@ fn move_player_vec(dx: f64, dy: f64, dz: f64) {
         if can_cross != 0 && (ny < 0.0 || ny >= 16.0) {
             let sdir: i32 = if ny < 0.0 { -1 } else { 1 };
             if step_air_single_axis(1, sdir, st.px, ny, st.pz) != 0 { return; }
-            st.py = fclamp(st.py, 0.25, 15.75);
+            let cly = fclamp(st.py, 0.25, 15.75);
+            if point_collides(st.px, cly, st.pz) == 0 { st.py = cly; }
             st.vy = 0.0;
         } else if point_collides(st.px, ny, st.pz) == 0 {
             st.py = ny;
@@ -3275,7 +3315,8 @@ fn move_player_vec(dx: f64, dy: f64, dz: f64) {
         if can_cross != 0 && (nz < 0.0 || nz >= 16.0) {
             let sdir: i32 = if nz < 0.0 { -1 } else { 1 };
             if step_air_single_axis(2, sdir, st.px, st.py, nz) != 0 { return; }
-            st.pz = fclamp(st.pz, 0.25, 15.75);
+            let clz = fclamp(st.pz, 0.25, 15.75);
+            if point_collides(st.px, st.py, clz) == 0 { st.pz = clz; }
             st.vz = 0.0;
         } else if point_collides(st.px, st.py, nz) == 0 {
             st.pz = nz;
