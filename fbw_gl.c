@@ -661,6 +661,17 @@ static void emit_cube(FbwVert *buf, int *cnt, int max_v,
     push_quad(buf, cnt, max_v, x1,y0,z0, x0,y0,z0, x0,y1,z0, x1,y1,z0, 0.72f, style, r, g, b, a);
 }
 
+static inline uint8_t chunk_at(int layer, int x, int y, int z);
+/* Any non-air block in a stride-sized cell anchored at world (wx,wy,wz)? */
+static inline int cell_occ_world(int stride, int wx, int wy, int wz) {
+    int dx, dy, dz;
+    for (dy = 0; dy < stride; dy++)
+        for (dz = 0; dz < stride; dz++)
+            for (dx = 0; dx < stride; dx++)
+                if (chunk_at(0, wx + dx, wy + dy, wz + dz) != BLK_AIR) return 1;
+    return 0;
+}
+
 /* offset (dx,dy,dz) in -3..3 -> neighbor slot + 1 (0 = none); O(1) for kilochunk meshing */
 static int g_neighbor_map[NEIGH_MAP_SIZE];
 
@@ -1053,11 +1064,16 @@ static void mesh_inward_slot(int layer, int slot, int lx, int ly, int lz,
     }
 }
 
-static void mesh_neighbor_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow, int nb) {
+/* Distance-tiered neighbor meshing: ring 1 = full per-block detail (exact
+ * previous path), ring 2 = 2x2x2 decimated cells (1/8 the cubes), ring 3 =
+ * 4x4x4 cells (1/64). Cell faces are culled cell-to-cell and across chunk
+ * borders through the neighbor map. */
+static void mesh_neighbor_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow, int nb, int stride) {
     float ox = (float)(g_neighbor_dx[nb] * 16);
     float oy = (float)(g_neighbor_dy[nb] * 16);
     float oz = (float)(g_neighbor_dz[nb] * 16);
     int y, z, x;
+    if (stride <= 1) {
     for (y = 0; y < CHUNK_DIM; y++) {
         for (z = 0; z < CHUNK_DIM; z++) {
             for (x = 0; x < CHUNK_DIM; x++) {
@@ -1081,6 +1097,49 @@ static void mesh_neighbor_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_gro
                 if (!nb_chunk_occ(nb, x, y, z + 1))
                     push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz1, wx1,wy0,wz1, wx1,wy1,wz1, wx0,wy1,wz1, 0.95f, style, r, g, b, 255);
                 if (!nb_chunk_occ(nb, x, y, z - 1))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz0, wx0,wy0,wz0, wx0,wy1,wz0, wx1,wy1,wz0, 0.70f, style, r, g, b, 255);
+            }
+        }
+    }
+    return;
+    }
+
+    /* Decimated path: emit stride-sized cubes for occupied cells */
+    for (y = 0; y < CHUNK_DIM; y += stride) {
+        for (z = 0; z < CHUNK_DIM; z += stride) {
+            for (x = 0; x < CHUNK_DIM; x += stride) {
+                uint8_t blk = BLK_AIR;
+                int occ = 0, dx, dy, dz;
+                for (dy = 0; dy < stride && !occ; dy++) {
+                    for (dz = 0; dz < stride && !occ; dz++) {
+                        for (dx = 0; dx < stride && !occ; dx++) {
+                            uint8_t cb = g_neighbors[nb][((y + dy) << 8) | ((z + dz) << 4) | (x + dx)];
+                            if (cb != BLK_AIR) { blk = cb; occ = 1; }
+                        }
+                    }
+                }
+                if (!occ) continue;
+                uint8_t r, g, b;
+                float style;
+                block_color(blk, &r, &g, &b, &style);
+                apply_depth_tint(&r, &g, &b);
+                float wx0 = ox + (float)x, wx1 = wx0 + (float)stride;
+                float wy0 = oy + (float)y, wy1 = wy0 + (float)stride;
+                float wz0 = oz + (float)z, wz1 = wz0 + (float)stride;
+                /* adjacent-cell occupancy probed in world space (works across
+                 * chunk borders through the neighbor map) */
+                int ax0 = g_neighbor_dx[nb] * 16 + x, ay0 = g_neighbor_dy[nb] * 16 + y, az0 = g_neighbor_dz[nb] * 16 + z;
+                if (!cell_occ_world(stride, ax0, ay0 + stride, az0))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy1,wz1, wx1,wy1,wz1, wx1,wy1,wz0, wx0,wy1,wz0, 1.00f, style, r, g, b, 255);
+                if (!cell_occ_world(stride, ax0, ay0 - stride, az0))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx1,wy0,wz0, wx1,wy0,wz1, wx0,wy0,wz1, 0.60f, style, r, g, b, 255);
+                if (!cell_occ_world(stride, ax0 + stride, ay0, az0))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz1, wx1,wy0,wz0, wx1,wy1,wz0, wx1,wy1,wz1, 0.88f, style, r, g, b, 255);
+                if (!cell_occ_world(stride, ax0 - stride, ay0, az0))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz0, wx0,wy0,wz1, wx0,wy1,wz1, wx0,wy1,wz0, 0.76f, style, r, g, b, 255);
+                if (!cell_occ_world(stride, ax0, ay0, az0 + stride))
+                    push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx0,wy0,wz1, wx1,wy0,wz1, wx1,wy1,wz1, wx0,wy1,wz1, 0.95f, style, r, g, b, 255);
+                if (!cell_occ_world(stride, ax0, ay0, az0 - stride))
                     push_quad_dyn(pbuf, cnt, max_v, allow_grow, wx1,wy0,wz0, wx0,wy0,wz0, wx0,wy1,wz0, wx1,wy1,wz0, 0.70f, style, r, g, b, 255);
             }
         }
@@ -1293,10 +1352,14 @@ static void rebuild_band1_shell(const double ox[MAX_PARENTS], const double oy[MA
     mesh_layer_to(&g_band1_verts, &g_band1_cnt, &g_band1_cap, 1,
                   0, 1.0f, 0.0f, 0.0f, 0.0f, 0, 0, 0, 0, 0.0f, 1);
 
-    // 10 Sibling neighbor chunks around Layer 0
+    // Sibling neighbor chunks around Layer 0 — distance-tiered LOD:
+    // ring 1 full detail, ring 2 = 2x decimated, ring 3 = 4x decimated
     for (int nb = 0; nb < MAX_NEIGHBORS; nb++) {
         if (g_neighbor_valid[nb]) {
-            mesh_neighbor_to(&g_band1_verts, &g_band1_cnt, &g_band1_cap, 1, nb);
+            int ax = abs(g_neighbor_dx[nb]), ay = abs(g_neighbor_dy[nb]), az = abs(g_neighbor_dz[nb]);
+            int ring = (ax >= ay && ax >= az) ? ax : ((ay >= az) ? ay : az);
+            int stride = (ring <= 1) ? 1 : ((ring == 2) ? 2 : 4);
+            mesh_neighbor_to(&g_band1_verts, &g_band1_cnt, &g_band1_cap, 1, nb, stride);
         }
     }
 
@@ -1695,6 +1758,7 @@ FBW_VIS_DEFAULT void fbw_gl_push_chunk_quad(int layer, int qidx, int packed4) {
 
 FBW_VIS_DEFAULT void fbw_gl_set_neighbor_meta(int nb, int valid, int dx, int dy, int dz, int biome) {
     if (nb < 0 || nb >= MAX_NEIGHBORS) return;
+    memset(g_neighbors[nb], BLK_AIR, CHUNK_VOL);  /* stale-clear: zero-quad pushes may be skipped */
     g_neighbor_valid[nb] = valid;
     g_neighbor_dx[nb] = dx;
     g_neighbor_dy[nb] = dy;

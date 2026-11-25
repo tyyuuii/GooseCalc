@@ -237,6 +237,7 @@ fn fbw_mobile_enter() {
         st.true_up = 1;
         st.show_minimap = 1;
         st.lod_dist_level = 4;
+        st.view_chunk_radius = 2;
         init_new_game();
         g_mob.initialized = 1;
     }
@@ -245,6 +246,8 @@ fn fbw_mobile_enter() {
     }
     if st.view_chunk_radius < 1 || st.view_chunk_radius > 3 {
         st.view_chunk_radius = 2;
+        load_current_chunk();
+        g_mob.sync_force = 1;
     }
     st.screen = SCREEN_PLAY;
     g_mob.last_ms = fbw_now_ms();
@@ -307,9 +310,23 @@ fn fbw_clear_exit_flag() {
 
 fn sync_chunks_to_gl() {
     let st = core();
-    if g_mob.sync_force == 0 &&
-       g_mob.sync_depth == st.depth &&
-       g_mob.sync_rev == st.chunk_rev {
+    var full = 0;
+    if g_mob.sync_force != 0 ||
+       g_mob.sync_depth != st.depth ||
+       g_mob.sync_rev != st.chunk_rev {
+        full = 1;
+    } else {
+        // Streaming light pass: push only slots whose data changed this frame
+        var sd: i32 = 0;
+        var pushed: i32 = 0;
+        while sd < MAX_NEIGHBORS {
+            if st.neighbor_dirty[sd] != 0 {
+                push_neighbor_slot(sd);
+                pushed = pushed + 1;
+            }
+            sd = sd + 1;
+        }
+        if pushed > 0 { fbw_gl_mark_chunks_dirty(); }
         return;
     }
 
@@ -352,25 +369,36 @@ fn sync_chunks_to_gl() {
 
     var nb: i32 = 0;
     while nb < MAX_NEIGHBORS {
-        fbw_gl_set_neighbor_meta(nb, st.neighbor_valid[nb], st.neighbor_dx[nb], st.neighbor_dy[nb], st.neighbor_dz[nb], st.neighbor_biome[nb]);
-        if st.neighbor_valid[nb] != 0 {
-            let n_off = nb * CHUNK_VOL;
-            q = 0;
-            while q < 1024 {
-                let base = n_off + q * 4;
-                let b0 = st.neighbor_blocks[base + 0] as! i32;
-                let b1 = st.neighbor_blocks[base + 1] as! i32;
-                let b2 = st.neighbor_blocks[base + 2] as! i32;
-                let b3 = st.neighbor_blocks[base + 3] as! i32;
-                let packed = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-                fbw_gl_push_neighbor_quad(nb, q, packed);
-                q = q + 1;
-            }
-        }
+        push_neighbor_slot(nb);
         nb = nb + 1;
     }
 
     fbw_gl_mark_chunks_dirty();
+}
+
+// Push one neighbor slot to the renderer (meta + quads). Empty chunks (all air)
+// are reported invalid so the C side never meshes them; zero-packed quads are
+// skipped because fbw_gl_set_neighbor_meta clears the slot buffer first.
+fn push_neighbor_slot(nb: i32) {
+    let st = core();
+    let filled = st.neighbor_fill[nb];
+    let valid = if filled != 0 { st.neighbor_valid[nb] } else { 0 };
+    fbw_gl_set_neighbor_meta(nb, valid, st.neighbor_dx[nb], st.neighbor_dy[nb], st.neighbor_dz[nb], st.neighbor_biome[nb]);
+    if valid != 0 {
+        let n_off = nb * CHUNK_VOL;
+        var q: i32 = 0;
+        while q < 1024 {
+            let base = n_off + q * 4;
+            let b0 = st.neighbor_blocks[base + 0] as! i32;
+            let b1 = st.neighbor_blocks[base + 1] as! i32;
+            let b2 = st.neighbor_blocks[base + 2] as! i32;
+            let b3 = st.neighbor_blocks[base + 3] as! i32;
+            let packed = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            if packed != 0 { fbw_gl_push_neighbor_quad(nb, q, packed); }
+            q = q + 1;
+        }
+    }
+    st.neighbor_dirty[nb] = 0;
 }
 
 fn layer0_block_exposed(x: i32, y: i32, z: i32) -> i32 {
@@ -1131,6 +1159,7 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
         step_mobile_controls(dt_ms);
         step_simulation(dt_ms);
         drain_pending_sfx();
+        let _ = resolve_pending_neighbors(8);  // stream far-ring chunks (8/frame)
     } else {
         st.anim_ms = st.anim_ms + dt_ms;
     }

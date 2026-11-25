@@ -125,3 +125,41 @@ room for the new slider row.
 - Pause → drag VIEW DIST slider to 3 → resume → 900-frame flight at radius 3 (342 neighbors):
   exit 0, status `VIEW DIST: 3 CHUNKS (342 LOADED)`, modal shows `VIEW DIST: 3 CHUNKS`.
 - `fbw_gl.c` syntax-checked (GLES3 stub headers); host link of calc_main.o + fbw_gl.o symbol-complete.
+
+---
+
+# Round 3 — SHRK far-teleport exploit, chunk streaming, LOD tiering & sync culling
+
+## Bug 1 (user-reported): shrink teleports you into a far block
+
+**Reproduced headless**: with SHRINK ANY toggled, pressing [SHRK] at spawn (Black Cube 3.8 blocks
+away) printed `Shrank 16x into fractal block!` — instant teleport, no travel. Root causes:
+
+1. `shrink_targeted_block()` ray reach was **4.5 blocks under SHRINK ANY** (2.4 otherwise) — Xar only
+   shrinks into blocks you are **touching** (ShrinkAny widens *which* blocks qualify, never the reach).
+2. A free **in-place fallback** shrank you 16× from anywhere under SHRINK ANY or Genesis mode — Xar
+   never shrinks with nothing near.
+
+**Fix**: ray reach **1.45** for every mode; ring/USE proximity tightened to **1.2** (fly-into-ring,
+was 2.6); in-place fallback removed (message instead); tutorial tip now says "fly to the Black Cube".
+Verified: SHRK at spawn does nothing in normal/Genesis/ShrinkAny modes; flying adjacent to the cube
+and pressing SHRK still shrinks into it (legit path preserved). The touch-collision shrink path is
+untouched (authentic).
+
+## Bug 2 (user-reported): LOD & culling broken after the chunk-distance update
+
+Measured root causes, all fixed:
+
+| Problem | Effect | Fix |
+|---|---|---|
+| **Batch4 script bug**: the `view_chunk_radius = 2` default was silently lost (patch script asserted after applying it in memory but before writing the file) | the initial chunk load ran with radius **0** → *zero* neighbors resolved at spawn → visible void/pop-in at the start and after every settings change | default restored at enter; the per-frame clamp now reloads chunks when it corrects an out-of-range value |
+| GL sync pushed **342 chunks × 1024 quads (~350k FFI calls)** on every chunk change, even for empty air | multi-hundred-ms stalls; far geometry appeared in bursts | per-slot **non-air fill counter** + **dirty flags**: only non-empty chunks sync, only changed slots re-push, zero-packed quads skipped (C side clears slot buffers on meta). Measured: **5,722 pushes instead of ~127k (22× less)** |
+| All 342 neighbors meshed at **full per-block detail** | huge vertex buffers, FPS collapse | **distance-tiered meshing**: ring 1 full detail, ring 2 = 2×2×2 decimated cells (⅛ cubes), ring 3 = 4×4×4 (1/64); cell faces culled cell-to-cell and across chunk borders through the neighbor map; ring 1 keeps the exact previous per-block path |
+| All far rings generated **at once** during a chunk crossing | giant hitch at every boundary | **chunk streaming**: ring 1 resolves immediately, rings 2–3 are queued and resolved **8 slots per frame** (`resolve_pending_neighbors`) — measured 8→42→74→**124/124 slots by frame 20** at radius 2 with no hitch |
+
+## Verification (round 3)
+
+- `goose check` → 0 errors; JNI exports byte-identical; all `fbw_gl` symbols resolve.
+- Harness: 4 shrink scenarios (normal / Genesis / ShrinkAny at spawn = no teleport; adjacent = legit
+  shrink), streaming counters (124/124 by frame 20), 0 forced grows, slider + full calculator/sudoku
+  regression — exit 0.

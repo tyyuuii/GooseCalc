@@ -259,6 +259,8 @@ root struct fbw_state {
     neighbor_dy: i32[342],
     neighbor_dz: i32[342],
     neighbor_biome: i32[342],
+    neighbor_fill: i32[342],  // non-air block count per neighbor slot (sync culling)
+    neighbor_dirty: i32[342], // slot needs GL re-push (streaming sync)
     inward_blocks: u8[1048576], // 256-slot * CHUNK_VOL multi-layer 3D sub-voxel cache
     inward_seeds: u64[256],
     inward_blks: u8[256],
@@ -625,6 +627,7 @@ fn dst_set_block(dst_layer: i32, x: i32, y: i32, z: i32, b: u8) {
         let nb = dst_layer - 1000;
         if nb >= 0 && nb < MAX_NEIGHBORS {
             st.neighbor_blocks[nb * CHUNK_VOL + idx] = b;
+            if b != BLK_AIR { st.neighbor_fill[nb] = st.neighbor_fill[nb] + 1; }
         }
     } else if dst_layer >= 10 {
         let slot = dst_layer - 10;
@@ -2169,6 +2172,7 @@ fn generate_chunk_blocks_to(dst_layer: i32, depth: i32, biome: i32, parent_blk: 
         else if dst_layer >= 1000 {
             let nb = dst_layer - 1000;
             if nb >= 0 && nb < MAX_NEIGHBORS { st.neighbor_blocks[nb * CHUNK_VOL + i] = BLK_AIR; }
+            if nb >= 0 && nb < MAX_NEIGHBORS { st.neighbor_fill[nb] = 0; }
         } else if dst_layer >= 10 {
             let slot = dst_layer - 10;
             if slot >= 0 && slot < 256 { st.inward_blocks[slot * CHUNK_VOL + i] = BLK_AIR; }
@@ -2280,6 +2284,7 @@ fn resolve_neighbor_chunk(slot: i32, dx: i32, dy: i32, dz: i32) {
     st.neighbor_dx[slot] = dx;
     st.neighbor_dy[slot] = dy;
     st.neighbor_dz[slot] = dz;
+    st.neighbor_dirty[slot] = 1;
 
     var cur_d: i32 = st.depth;
     var anc_d: i32 = st.depth - 1;
@@ -2303,7 +2308,13 @@ fn resolve_neighbor_chunk(slot: i32, dx: i32, dy: i32, dz: i32) {
             break;
         }
         cur_d = cur_d - 1;
-        if cur_d <= MAX_NEG_DEPTH { return; }
+        if cur_d <= MAX_NEG_DEPTH {
+            // Cosmic boundary: mark attempted so the streaming resolver won't retry
+            st.neighbor_dx[slot] = 0;
+            st.neighbor_dy[slot] = 0;
+            st.neighbor_dz[slot] = 0;
+            return;
+        }
         ensure_neg_frame_seed(cur_d);
     }
 
@@ -2409,7 +2420,17 @@ fn load_current_chunk() {
                     let az = if odz < 0 { -odz } else { odz };
                     let mx = if ax >= ay && ax >= az { ax } else if ay >= az { ay } else { az };
                     if mx == ring && nslot < MAX_NEIGHBORS {
-                        resolve_neighbor_chunk(nslot, odx, ody, odz);
+                        if ring == 1 {
+                            resolve_neighbor_chunk(nslot, odx, ody, odz);
+                        } else {
+                            // Queue far rings: streamed in per frame (no chunk-crossing hitch)
+                            st.neighbor_valid[nslot] = 0;
+                            st.neighbor_dx[nslot] = odx;
+                            st.neighbor_dy[nslot] = ody;
+                            st.neighbor_dz[nslot] = odz;
+                            st.neighbor_fill[nslot] = 0;
+                            st.neighbor_dirty[nslot] = 1;
+                        }
                         nslot = nslot + 1;
                     }
                     odz = odz + 1;
@@ -2422,6 +2443,10 @@ fn load_current_chunk() {
     }
     while nslot < MAX_NEIGHBORS {
         st.neighbor_valid[nslot] = 0;
+        st.neighbor_dx[nslot] = 0;
+        st.neighbor_dy[nslot] = 0;
+        st.neighbor_dz[nslot] = 0;
+        st.neighbor_fill[nslot] = 0;
         nslot = nslot + 1;
     }
 
@@ -2446,6 +2471,24 @@ fn load_current_chunk() {
         }
         pl = pl + 1;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming resolver: generates up to max_n queued far-ring neighbor chunks.
+// Called per frame from the mobile tick; returns how many slots were filled.
+// ---------------------------------------------------------------------------
+fn resolve_pending_neighbors(max_n: i32) -> i32 {
+    var done: i32 = 0;
+    var s: i32 = 0;
+    while s < MAX_NEIGHBORS && done < max_n {
+        if st.neighbor_valid[s] == 0 &&
+           (st.neighbor_dx[s] != 0 || st.neighbor_dy[s] != 0 || st.neighbor_dz[s] != 0) {
+            resolve_neighbor_chunk(s, st.neighbor_dx[s], st.neighbor_dy[s], st.neighbor_dz[s]);
+            done = done + 1;
+        }
+        s = s + 1;
+    }
+    return done;
 }
 
 // ---------------------------------------------------------------------------
@@ -2918,7 +2961,7 @@ fn init_new_game() {
     if st.genesis_mode != 0 {
         set_status_msg("Genesis Mode: Shrink into any block or fly freely!", 4200);
     } else {
-        set_status_msg("Tutorial: Shrink via Green Ring or aim at Black Cube & press [SHRK]!", 4200);
+        set_status_msg("Tutorial: Shrink via Green Ring, or fly to the Black Cube & press [SHRK]!", 4200);
     }
 }
 
@@ -4563,7 +4606,9 @@ fn shrink_targeted_block() {
     var fy: f64 = 0.0;
     var fz: f64 = 0.0;
     camera_forward(fx, fy, fz);
-    let max_t: f64 = if st.shrink_any != 0 { 4.5 } else { 2.4 };
+    // Xar: you shrink into blocks you are TOUCHING (ShrinkAny widens WHICH
+    // blocks qualify, never the reach). Was 4.5/2.4 — allowed far-teleports.
+    let max_t: f64 = 1.45;
     var t: f64 = 0.4;
     while t <= max_t {
         let hx = st.px + fx * t;
@@ -4593,7 +4638,7 @@ fn shrink_targeted_block() {
                 let dx = st.entities[i].x - st.px;
                 let dy = st.entities[i].y - st.py;
                 let dz = st.entities[i].z - st.pz;
-                if (dx * dx + dy * dy + dz * dz) < 6.76 {
+                if (dx * dx + dy * dy + dz * dz) < 1.44 {
                     let rx = clamp_i(ffloor(st.entities[i].x), 0, 15);
                     let ry = clamp_i(ffloor(st.entities[i].y), 0, 15);
                     let rz = clamp_i(ffloor(st.entities[i].z), 0, 15);
@@ -4606,20 +4651,16 @@ fn shrink_targeted_block() {
         i = i + 1;
     }
 
-    if st.shrink_any != 0 || st.genesis_mode != 0 {
-        let pbx = clamp_i(ffloor(st.px), 0, 15);
-        let pby = clamp_i(ffloor(st.py), 0, 15);
-        let pbz = clamp_i(ffloor(st.pz), 0, 15);
-        shrink_into_ex(pbx, pby, pbz, BLK_AIR, -1, 1, st.px, st.py, st.pz);
-    } else {
-        set_status_msg("Aim at a Fractal Block or Green/Pink Ring to shrink 16x!", 1500);
-    }
+    // Xar never shrinks in-place with nothing near — not even with ShrinkAny
+    // (which only widens WHICH touched blocks qualify). Was: free in-place
+    // shrink anywhere under ShrinkAny/Genesis (far-teleport exploit).
+    set_status_msg("Fly to a Fractal Block or Ring to shrink 16x!", 1500);
 }
 
 fn use_nearest() {
     var i: i32 = 0;
     var best_ring: i32 = -1;
-    var best_d: f64 = 2.6;
+    var best_d: f64 = 1.2;
     while i < MAX_ENTITIES {
         if st.entities[i].active != 0 {
             let k = st.entities[i].kind;
@@ -4652,7 +4693,7 @@ fn use_nearest() {
     var fz: f64 = 0.0;
     camera_forward(fx, fy, fz);
     var t: f64 = 0.4;
-    while t <= 2.6 {
+    while t <= 2.0 {
         let bx = ffloor(st.px + fx * t);
         let by = ffloor(st.py + fy * t);
         let bz = ffloor(st.pz + fz * t);
