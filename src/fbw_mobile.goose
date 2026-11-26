@@ -835,6 +835,7 @@ fn fbw_mobile_enter() {
         g_mob.sync_force = 1;
     }
     st.screen = SCREEN_PLAY;
+    fbw_bgm_start();
     g_mob.confirm_reset = 0;
     g_mob.edit_drag_pid = -1;
     g_mob.last_ms = fbw_now_ms();

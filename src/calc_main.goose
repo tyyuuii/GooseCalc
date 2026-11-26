@@ -126,6 +126,7 @@ export fn goose_handle_pointer(x: i32, y: i32, pid: i32, ev_type: i32) -> i32 {
         fbw_mobile_pointer(x, y, pid, ev_type);
         if fbw_should_exit_to_calc() != 0 {
             fbw_mobile_save_now();
+            fbw_bgm_stop();
             fbw_clear_exit_flag();
             g_game_mode = 0;
             fbw_set_orientation(0);
@@ -145,6 +146,7 @@ export fn goose_handle_touch(x: i32, y: i32, bDown: i32) -> i32 {
         fbw_mobile_pointer(x, y, 0, if bDown != 0 { 1 } else { 0 });
         if fbw_should_exit_to_calc() != 0 {
             fbw_mobile_save_now();
+            fbw_bgm_stop();
             fbw_clear_exit_flag();
             g_game_mode = 0;
             fbw_set_orientation(0);
@@ -300,6 +302,7 @@ export fn goose_handle_touch(x: i32, y: i32, bDown: i32) -> i32 {
         g_ui.layout = empty_layout();
         fbw_set_orientation(1);
         fbw_mobile_enter();
+        fbw_bgm_start();
         fbw_sound_fx(4);
         return 1;
     }
@@ -337,6 +340,7 @@ export fn goose_draw() {
         fbw_mobile_tick_and_draw(w, h);
         if fbw_should_exit_to_calc() != 0 {
             fbw_mobile_save_now();
+            fbw_bgm_stop();
             fbw_clear_exit_flag();
             g_game_mode = 0;
             fbw_set_orientation(0);
@@ -402,5 +406,10 @@ export fn goose_force_resize() {
 export fn goose_handle_suspend() {
     if g_game_mode == 2 {
         fbw_mobile_save_now();
+        fbw_bgm_pause();
     }
+}
+
+export fn goose_is_fbw() -> i32 {
+    return if g_game_mode == 2 { 1 } else { 0 };
 }

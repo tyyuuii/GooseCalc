@@ -251,9 +251,13 @@ __attribute__((visibility("default"))) int32_t fbw_save_exists(void) {
 // per-glyph advance = rightmost set column + 2 cells (proportional look).
 #include "font8x8.h"
 
-// === Click sound via OpenSLES (already linked) ===
+// === Audio via OpenSLES (SFX & Ambient BGM) ===
 #include <SLES/OpenSLES.h>
 #include <SLES/OpenSLES_Android.h>
+
+#define MINIMP3_IMPLEMENTATION
+#include "minimp3.h"
+#include "fbw_bgm_data.h"
 
 static SLObjectItf g_sl_engine_obj = NULL;
 static SLObjectItf g_sl_mix_obj = NULL;
@@ -261,6 +265,32 @@ static SLObjectItf g_sl_player_obj = NULL;
 static SLPlayItf g_sl_play = NULL;
 static SLBufferQueueItf g_sl_queue = NULL;
 static int g_sound_ready = 0;
+
+static SLObjectItf g_sl_bgm_player_obj = NULL;
+static SLPlayItf g_sl_bgm_play = NULL;
+static SLBufferQueueItf g_sl_bgm_queue = NULL;
+static short *g_bgm_pcm = NULL;
+static int g_bgm_pcm_samples = 0;
+static volatile int g_bgm_playing = 0;
+static int g_bgm_play_pos = 0;
+
+#define BGM_CHUNK_SAMPLES 8192
+
+static void bgm_bq_callback(SLBufferQueueItf bq, void *context) {
+    (void)context;
+    if (!g_bgm_playing || !g_bgm_pcm || g_bgm_pcm_samples <= 0) return;
+    int rem = g_bgm_pcm_samples - g_bgm_play_pos;
+    if (rem <= 0) {
+        g_bgm_play_pos = 0;
+        rem = g_bgm_pcm_samples;
+    }
+    int chunk = rem < BGM_CHUNK_SAMPLES ? rem : BGM_CHUNK_SAMPLES;
+    (*bq)->Enqueue(bq, g_bgm_pcm + g_bgm_play_pos, (SLuint32)(chunk * (int)sizeof(short)));
+    g_bgm_play_pos += chunk;
+    if (g_bgm_play_pos >= g_bgm_pcm_samples) {
+        g_bgm_play_pos = 0;
+    }
+}
 
 #define CLICK_RATE     44100
 #define CLICK_MS       60
@@ -414,12 +444,104 @@ static void sound_init(void) {
             g_sfx_pcm[7][i] = clamp_pcm(s * 13000.0);
         }
     }
+    // Decode BGM MP3 to 16 kHz mono PCM in memory
+    g_bgm_pcm = (short *)malloc(1950000 * sizeof(short));
+    if (g_bgm_pcm) {
+        static mp3dec_t s_mp3dec;
+        mp3dec_init(&s_mp3dec);
+        mp3dec_frame_info_t info;
+        mp3d_sample_t frame_pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+        int off = 0;
+        int mp3_len = (int)sizeof(g_bgm_mp3);
+        g_bgm_pcm_samples = 0;
+        while (off < mp3_len && g_bgm_pcm_samples < 1940000) {
+            int samples = mp3dec_decode_frame(&s_mp3dec, g_bgm_mp3 + off, mp3_len - off, frame_pcm, &info);
+            off += info.frame_bytes;
+            if (samples > 0) {
+                if (info.channels == 1) {
+                    for (int s = 0; s < samples; s++) {
+                        g_bgm_pcm[g_bgm_pcm_samples++] = (short)(((int)frame_pcm[s] * 70) / 100);
+                    }
+                } else {
+                    for (int s = 0; s < samples; s++) {
+                        int m = ((int)frame_pcm[s * 2] + (int)frame_pcm[s * 2 + 1]) / 2;
+                        g_bgm_pcm[g_bgm_pcm_samples++] = (short)((m * 70) / 100);
+                    }
+                }
+            }
+            if (!info.frame_bytes) break;
+        }
+    }
+
+    // Create BGM Audio Player (16 kHz mono)
+    SLDataLocator_AndroidSimpleBufferQueue bgm_bq =
+        { SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, 4 };
+    SLDataFormat_PCM bgm_fmt = {
+        SL_DATAFORMAT_PCM, 1, SL_SAMPLINGRATE_16,
+        SL_PCMSAMPLEFORMAT_FIXED_16, SL_PCMSAMPLEFORMAT_FIXED_16,
+        SL_SPEAKER_FRONT_CENTER, SL_BYTEORDER_LITTLEENDIAN };
+    SLDataSource bgm_src = { &bgm_bq, &bgm_fmt };
+    SLDataLocator_OutputMix bgm_loc_out = { SL_DATALOCATOR_OUTPUTMIX, g_sl_mix_obj };
+    SLDataSink bgm_sink = { &bgm_loc_out, NULL };
+    SLInterfaceID bgm_ids[1] = { SL_IID_BUFFERQUEUE };
+    SLboolean bgm_reqs[1] = { SL_BOOLEAN_TRUE };
+
+    r = (*engine)->CreateAudioPlayer(engine, &g_sl_bgm_player_obj, &bgm_src, &bgm_sink, 1, bgm_ids, bgm_reqs);
+    if (r == SL_RESULT_SUCCESS) {
+        r = (*g_sl_bgm_player_obj)->Realize(g_sl_bgm_player_obj, SL_BOOLEAN_FALSE);
+        if (r == SL_RESULT_SUCCESS) {
+            (*g_sl_bgm_player_obj)->GetInterface(g_sl_bgm_player_obj, SL_IID_PLAY, &g_sl_bgm_play);
+            (*g_sl_bgm_player_obj)->GetInterface(g_sl_bgm_player_obj, SL_IID_BUFFERQUEUE, &g_sl_bgm_queue);
+            if (g_sl_bgm_queue) {
+                (*g_sl_bgm_queue)->RegisterCallback(g_sl_bgm_queue, bgm_bq_callback, NULL);
+            }
+        }
+    }
+
     g_sound_ready = 1;
+}
+
+__attribute__((visibility("default"))) void fbw_bgm_start(void) {
+    if (!g_sl_bgm_play || !g_sl_bgm_queue || !g_bgm_pcm || g_bgm_pcm_samples <= 0) return;
+    if (g_bgm_playing) return;
+    g_bgm_playing = 1;
+    g_bgm_play_pos = 0;
+    (*g_sl_bgm_queue)->Clear(g_sl_bgm_queue);
+    bgm_bq_callback(g_sl_bgm_queue, NULL);
+    bgm_bq_callback(g_sl_bgm_queue, NULL);
+    (*g_sl_bgm_play)->SetPlayState(g_sl_bgm_play, SL_PLAYSTATE_PLAYING);
+}
+
+__attribute__((visibility("default"))) void fbw_bgm_stop(void) {
+    g_bgm_playing = 0;
+    if (g_sl_bgm_play) {
+        (*g_sl_bgm_play)->SetPlayState(g_sl_bgm_play, SL_PLAYSTATE_PAUSED);
+    }
+    if (g_sl_bgm_queue) {
+        (*g_sl_bgm_queue)->Clear(g_sl_bgm_queue);
+    }
+    g_bgm_play_pos = 0;
+}
+
+__attribute__((visibility("default"))) void fbw_bgm_pause(void) {
+    if (g_sl_bgm_play && g_bgm_playing) {
+        (*g_sl_bgm_play)->SetPlayState(g_sl_bgm_play, SL_PLAYSTATE_PAUSED);
+    }
+}
+
+__attribute__((visibility("default"))) void fbw_bgm_resume(void) {
+    if (g_sl_bgm_play && g_bgm_playing) {
+        (*g_sl_bgm_play)->SetPlayState(g_sl_bgm_play, SL_PLAYSTATE_PLAYING);
+    }
+}
+
+__attribute__((visibility("default"))) int fbw_bgm_is_playing(void) {
+    return g_bgm_playing;
 }
 
 __attribute__((visibility("default"))) void fbw_sound_fx(int kind) {
     if (!g_sound_ready) return;
-    if (kind < 0 || kind >= SFX_COUNT) kind = 0;
+    if (kind <= 0 || kind >= SFX_COUNT) return;
     if (g_sl_queue) {
         (*g_sl_queue)->Clear(g_sl_queue);
         (*g_sl_queue)->Enqueue(g_sl_queue, g_sfx_pcm[kind], (SLuint32)(g_sfx_len[kind] * (int)sizeof(short)));
@@ -430,7 +552,14 @@ __attribute__((visibility("default"))) void fbw_sound_fx(int kind) {
 }
 
 void sound_click(void) {
-    fbw_sound_fx(0);
+    if (!g_sound_ready) return;
+    if (g_sl_queue) {
+        (*g_sl_queue)->Clear(g_sl_queue);
+        (*g_sl_queue)->Enqueue(g_sl_queue, g_sfx_pcm[0], (SLuint32)(g_sfx_len[0] * (int)sizeof(short)));
+    }
+    if (g_sl_play) {
+        (*g_sl_play)->SetPlayState(g_sl_play, SL_PLAYSTATE_PLAYING);
+    }
 }
 
 static struct timespec g_boot_ts;
@@ -560,17 +689,22 @@ __attribute__((visibility("default"))) int goose_text_width(int scale) {
 }
 
 int HandleDestroy() {
+    fbw_bgm_stop();
     if (g_goose_started) goose_handle_suspend();
     return 0;
 }
 void HandleSuspend() {
     suspended = 1;
+    fbw_bgm_pause();
     if (g_goose_started) goose_handle_suspend();
 }
 void HandleResume() {
     if (gapp && gapp->window != NULL) {
         suspended = 0;
         goose_force_resize();
+        if (goose_is_fbw()) {
+            fbw_bgm_resume();
+        }
     }
 }
 
@@ -586,7 +720,9 @@ void HandleKey( int keycode, int bDown )
 void HandleButton( int x, int y, int button, int bDown )
 {
     if (bDown) {
-        sound_click();
+        if (!goose_is_fbw()) {
+            sound_click();
+        }
         goose_handle_pointer(x, y, button, 1);
     } else {
         goose_handle_pointer(x, y, button, 0);
@@ -686,6 +822,7 @@ int main(int argc, char** argv)
         }
     }
 
+    fbw_bgm_stop();
     if (g_goose_started) {
         goose_handle_suspend();
         g_goose_started = 0;

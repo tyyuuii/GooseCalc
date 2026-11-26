@@ -7,6 +7,11 @@ import calc_bridge;
 extern fn fbw_set_orientation(landscape: i32);
 extern fn fbw_now_ms() -> i32;
 extern fn fbw_sound_fx(kind: i32);
+extern fn fbw_bgm_start();
+extern fn fbw_bgm_stop();
+extern fn fbw_bgm_pause();
+extern fn fbw_bgm_resume();
+extern fn fbw_bgm_is_playing() -> i32;
 
 extern fn fbw_save_begin() -> i32;
 extern fn fbw_save_push_i32(v: i32);
