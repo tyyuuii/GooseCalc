@@ -1,0 +1,1329 @@
+diff --git a/fbw_gl.c b/fbw_gl.c
+index 2e9fe7c..186c845 100644
+--- a/fbw_gl.c
++++ b/fbw_gl.c
+@@ -57,8 +57,9 @@
+ #define BLK_UPG_ROF       40
+ #define BLK_UPG_AMMO      41
+ #define BLK_UPG_SPEED     42
+-#define BLK_KEY_BLOCK     43
+-#define BLK_UPG_WEP       44
++#define BLK_KEY_BLOCK       43
++#define BLK_UPG_WEP         44
++#define BLK_UPGRADE_STATION 45
+ 
+ // Entity kinds matching fbw_core.goose
+ #define ENT_RING_GREEN    1
+@@ -243,20 +244,22 @@ static const char *SKY_FS =
+     "  vec3 dir = normalize(u_fwd + v_ndc.x * u_aspect * 0.74 * u_right + v_ndc.y * 0.74 * u_up);\n"
+     "  float h_band = clamp(dir.y * 0.78 + 0.36, 0.0, 1.0);\n"
+     "  vec3 col = mix(u_bot, u_top, pow(h_band, 0.85));\n"
+-    "  float horizon_glow = exp(-abs(dir.y) * 5.5) * 0.16;\n"
++    "  float horizon_glow = exp(-abs(dir.y) * 4.5) * 0.22;\n"
+     "  col += u_bot * horizon_glow;\n"
+     "  if (u_star > 0.5) {\n"
+     "    vec3 cell = floor(dir * 96.0);\n"
+     "    float h = hash31(cell);\n"
+-    "    if (h > 0.992) {\n"
++    "    if (h > 0.990) {\n"
+     "      float tw = 0.65 + 0.35 * sin(u_time * 3.0 + h * 90.0);\n"
+-    "      col += vec3(0.86, 0.94, 1.0) * tw * u_star;\n"
++    "      col += vec3(0.88, 0.95, 1.0) * tw * u_star;\n"
+     "    }\n"
+-    "  } else if (dir.y > 0.04) {\n"
+-    "    vec2 c_uv = dir.xz / max(dir.y + 0.25, 0.25) * 1.4 + vec2(u_time * 0.015, 0.0);\n"
+-    "    float cn = hash31(vec3(floor(c_uv * 2.5), 1.0));\n"
+-    "    if (cn > 0.72) {\n"
+-    "      col = mix(col, vec3(0.96, 0.98, 1.0), 0.18 * smoothstep(0.04, 0.35, dir.y));\n"
++    "    float neb = hash31(floor(dir * 5.0));\n"
++    "    col += vec3(0.08, 0.04, 0.14) * smoothstep(0.60, 0.98, neb) * u_star;\n"
++    "  } else if (dir.y > 0.02) {\n"
++    "    vec2 c_uv = dir.xz / max(dir.y + 0.30, 0.30) * 1.3 + vec2(u_time * 0.012, 0.0);\n"
++    "    float cn = hash31(vec3(floor(c_uv * 2.2), 1.0));\n"
++    "    if (cn > 0.68) {\n"
++    "      col = mix(col, vec3(0.98, 0.99, 1.0), 0.26 * smoothstep(0.02, 0.32, dir.y));\n"
+     "    }\n"
+     "  }\n"
+     "  gl_FragColor = vec4(col, 1.0);\n"
+@@ -310,61 +313,67 @@ static const char *WORLD_FS =
+     "  float d_cen = max(abs(uv.x - 0.5), abs(uv.y - 0.5)) * 2.0;\n"
+     "  float outline_w = (tier > 1.5) ? 0.025 : ((tier > 0.5) ? 0.036 : 0.048);\n"
+     "  if (style < 0.5) {\n"
+-    "    // Stone / Tutorial / Sand / Dirt crisp Steam FBW voxel outline + subtle stone grain\n"
+-    "    float grain = 0.92 + 0.14 * h21(floor(uv * 12.0));\n"
++    "    // Tutorial Walls / Stone / Dirt: crisp Steam FBW beveled tile + pixel grid\n"
++    "    float grain = 0.93 + 0.12 * h21(floor(uv * 8.0));\n"
+     "    base *= grain;\n"
+-    "    if (e < outline_w) base *= 0.22;\n"
+-    "    else if (e < outline_w + 0.035) base *= 1.08;\n"
++    "    if (e < outline_w) base *= 0.24;\n"
++    "    else if (e < outline_w + 0.045) base = mix(base, vec3(1.0), 0.18);\n"
+     "  } else if (style < 1.5) {\n"
+-    "    // Black Cube / Menger Sponge: crisp grey stone trusses + diagonal X-brace + hollow cavity\n"
++    "    // Black Cube / Core Gate / Yellow Core: nested fractal square Menger face\n"
+     "    float diag = min(abs(uv.x - uv.y), abs(uv.x + uv.y - 1.0));\n"
+     "    if (e < 0.055) {\n"
+-    "      base = vec3(0.08, 0.09, 0.12);\n"
+-    "    } else if (d_cen > 0.58 || diag < 0.065) {\n"
+-    "      base *= (0.94 + 0.12 * cell_n);\n"
++    "      base = vec3(0.06, 0.07, 0.10);\n"
++    "    } else if (d_cen > 0.64 || (d_cen > 0.24 && d_cen < 0.36) || diag < 0.045) {\n"
++    "      base *= (0.95 + 0.10 * cell_n);\n"
++    "    } else if (d_cen <= 0.24) {\n"
++    "      base = mix(base * 0.22, vec3(0.24, 0.84, 1.0), 0.35 + 0.15 * sin(u_time * 3.0));\n"
+     "    } else {\n"
+-    "      base = mix(base * 0.24, vec3(0.18, 0.72, 0.92), step(0.84, fract(d_cen * 3.0 - u_time * 0.25)) * 0.45);\n"
++    "      base *= 0.32;\n"
+     "    }\n"
+-    "    light = max(light, 0.92);\n"
++    "    light = max(light, 0.94);\n"
+     "  } else if (style < 2.5) {\n"
+-    "    // Stations / Upgrades / Tome / Spawner: crisp frame + glowing animated center emblem\n"
+-    "    float pulse = 0.88 + 0.16 * sin(u_time * 4.0);\n"
+-    "    float icon = step(0.18, d_cen) * (1.0 - step(0.46, d_cen));\n"
+-    "    if (e < 0.065) base = vec3(0.08, 0.10, 0.14);\n"
+-    "    else if (e < 0.105) base = mix(base, vec3(1.0), 0.45);\n"
+-    "    else if (icon > 0.5) base = mix(base, vec3(1.0, 0.96, 0.72), 0.55);\n"
+-    "    else base *= 0.85;\n"
++    "    // Stations / Upgrades / Tome / Spawner: crisp frame + glowing animated emblem\n"
++    "    float pulse = 0.90 + 0.12 * sin(u_time * 4.0);\n"
++    "    float cross_bar = max(step(abs(uv.x - 0.5), 0.11) * step(abs(uv.y - 0.5), 0.28),\n"
++    "                          step(abs(uv.y - 0.5), 0.11) * step(abs(uv.x - 0.5), 0.28));\n"
++    "    if (e < 0.065) base = vec3(0.06, 0.08, 0.12);\n"
++    "    else if (e < 0.11) base = mix(base, vec3(1.0), 0.42);\n"
++    "    else if (cross_bar > 0.5) base = mix(base, vec3(1.0, 0.98, 0.80), 0.65);\n"
++    "    else base *= 0.80;\n"
+     "    base *= pulse;\n"
+     "    light = max(light, 0.98);\n"
+     "  } else if (style < 3.5) {\n"
+     "    // Ice & Glass crystal prism\n"
+-    "    float sheen = smoothstep(0.62, 0.98, fract(uv.x * 0.75 + uv.y * 0.85));\n"
+-    "    base = mix(base, vec3(0.92, 0.99, 1.0), sheen * 0.45);\n"
+-    "    if (e < outline_w) base *= 0.45;\n"
++    "    float sheen = smoothstep(0.60, 0.98, fract(uv.x * 0.75 + uv.y * 0.85));\n"
++    "    base = mix(base, vec3(0.94, 0.99, 1.0), sheen * 0.48);\n"
++    "    if (e < outline_w) base *= 0.42;\n"
+     "  } else if (style < 4.5) {\n"
+-    "    // Grass & Leaves: vibrant foliage speckles + crisp voxel edge\n"
+-    "    float dapple = 0.82 + 0.32 * h21(floor(uv * 10.0));\n"
+-    "    base *= dapple;\n"
+-    "    if (e < outline_w) base *= 0.32;\n"
++    "    // Grass & Ying Leaves: crisp pixel-cluster foliage + subtle highlight\n"
++    "    float n8 = h21(floor(uv * 8.0));\n"
++    "    base *= (0.86 + 0.26 * n8);\n"
++    "    if (n8 > 0.91) base = mix(base, vec3(0.85, 1.0, 0.58), 0.45);\n"
++    "    if (e < outline_w) base *= 0.30;\n"
+     "  } else if (style < 5.5) {\n"
+     "    // Wood bark grain\n"
+-    "    float bark = 0.84 + 0.24 * sin(uv.x * 28.0 + cell_n * 3.1);\n"
++    "    float bark = 0.84 + 0.22 * sin(uv.x * 26.0 + cell_n * 3.1);\n"
+     "    base *= bark;\n"
+     "    if (e < outline_w) base *= 0.28;\n"
+     "  } else if (style < 6.5) {\n"
+-    "    // Alpha Cube / White Flower / Mylantis circuit lattice\n"
++    "    // Alpha Cube / White Flower / Mylantis geometric tile\n"
+     "    float trace = step(0.84, max(puv.x, puv.y));\n"
+-    "    if (e < 0.055) base *= 0.24;\n"
+-    "    else if (trace > 0.5) base *= 1.24;\n"
+-    "    else base *= (0.88 + 0.14 * cell_n);\n"
++    "    float center_sq = step(d_cen, 0.30);\n"
++    "    if (e < 0.055) base *= 0.26;\n"
++    "    else if (center_sq > 0.5 && base.r > 0.85 && base.g > 0.85) base = vec3(1.0, 0.88, 0.28);\n"
++    "    else if (trace > 0.5) base *= 1.20;\n"
++    "    else base *= (0.90 + 0.12 * cell_n);\n"
+     "  } else if (style < 7.5) {\n"
+-    "    // Yellow Flower / Pollen / Desert World: striated radiant bands\n"
+-    "    float strata = 0.88 + 0.20 * sin(uv.y * 18.0 + sin(uv.x * 6.0));\n"
++    "    // Yellow Flower / Pollen / Desert World: crisp stepped pixel strata\n"
++    "    float strata = 0.90 + 0.16 * sin(uv.y * 18.0 + sin(uv.x * 6.0));\n"
+     "    base *= strata;\n"
+     "    if (e < outline_w) base *= 0.28;\n"
+     "  } else if (style < 8.5) {\n"
+     "    // Gold Ore / Crate / Vault Door: metallic rivet & ore flecks\n"
+-    "    float fleck = step(0.78, cell_n);\n"
++    "    float fleck = step(0.76, cell_n);\n"
+     "    if (e < 0.065) base *= 0.25;\n"
+     "    else if (fleck > 0.5) base = mix(base, vec3(1.0, 0.94, 0.55), 0.55);\n"
+     "  } else if (style < 9.5) {\n"
+@@ -561,9 +570,10 @@ static void block_color(uint8_t blk, uint8_t *r, uint8_t *g, uint8_t *b, float *
+         case BLK_UPG_ROF:       *r = 252; *g = 178; *b = 42;  *style = 2.0f; break;
+         case BLK_UPG_AMMO:      *r = 176; *g = 92;  *b = 248; *style = 2.0f; break;
+         case BLK_UPG_SPEED:     *r = 56;  *g = 236; *b = 216; *style = 2.0f; break;
+-        case BLK_KEY_BLOCK:     *r = 255; *g = 228; *b = 72;  *style = 2.0f; break;
+-        case BLK_UPG_WEP:       *r = 48;  *g = 236; *b = 152; *style = 2.0f; break;
+-        default:                *r = 128; *g = 128; *b = 140; *style = 0.0f; break;
++        case BLK_KEY_BLOCK:       *r = 255; *g = 228; *b = 72;  *style = 2.0f; break;
++        case BLK_UPG_WEP:         *r = 48;  *g = 236; *b = 152; *style = 2.0f; break;
++        case BLK_UPGRADE_STATION: *r = 255; *g = 140; *b = 40;  *style = 2.0f; break;
++        default:                  *r = 128; *g = 128; *b = 140; *style = 0.0f; break;
+     }
+ }
+ 
+@@ -2050,8 +2060,10 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
+     build_mvp_band(mvp, aspect, g_cam_x, g_cam_y, g_cam_z, 0.08f, 280.0f);
+     glUniformMatrix4fv(g_u_mvp, 1, GL_FALSE, mvp);
+     glUniform3f(g_u_cam, g_cam_x, g_cam_y, g_cam_z);
+-    glUniform2f(g_u_fog_params, 32.0f, 260.0f);
+-    glUniform1f(g_u_fog_max, 0.64f);
++    float fog_start = (g_biome == 1 || g_biome == 2 || g_biome == 3) ? 44.0f : 32.0f;
++    float fog_max = (g_biome == 1 || g_biome == 2 || g_biome == 3) ? 0.46f : 0.62f;
++    glUniform2f(g_u_fog_params, fog_start, 280.0f);
++    glUniform1f(g_u_fog_max, fog_max);
+ 
+     if (g_band1_cnt > 0) {
+         draw_vert_buffer(g_vbo_band1, g_band1_cnt);
+diff --git a/src/fbw_core.goose b/src/fbw_core.goose
+index 954ef03..600bee9 100644
+--- a/src/fbw_core.goose
++++ b/src/fbw_core.goose
+@@ -1215,10 +1215,26 @@ fn resolve_child_frame_biome(
+     return pick_biome_for_entry(parent_depth + 1, blk, -1, cseed, parent_biome);
+ }
+ 
++fn dst_fill_box(dst: i32, x0: i32, y0: i32, z0: i32, x1: i32, y1: i32, z1: i32, blk: u8) {
++    var y: i32 = y0;
++    while y <= y1 {
++        var z: i32 = z0;
++        while z <= z1 {
++            var x: i32 = x0;
++            while x <= x1 {
++                dst_set_block(dst, x, y, z, blk);
++                x = x + 1;
++            }
++            z = z + 1;
++        }
++        y = y + 1;
++    }
++}
++
+ fn build_ying_tree_to(dst: i32, tx: i32, tz: i32, base_y: i32, h: i32, has_fruit: i32) {
+     var y: i32 = 0;
+     while y < h {
+-        dst_set_block(dst, tx, base_y + y, tz, BLK_WOOD);
++        dst_set_block(dst, tx, base_y + y, tz, if y == 1 && has_fruit != 0 { BLK_INFINITY_RED } else { BLK_WOOD });
+         y = y + 1;
+     }
+     let cy = base_y + h;
+@@ -1246,38 +1262,131 @@ fn build_ying_tree_to(dst: i32, tx: i32, tz: i32, base_y: i32, h: i32, has_fruit
+     }
+ }
+ 
++fn build_colossal_ying_tree_to(dst: i32, tx: i32, tz: i32, base_y: i32, h: i32) {
++    var y: i32 = 0;
++    while y < h {
++        dst_set_block(dst, tx, base_y + y, tz, BLK_WOOD);
++        dst_set_block(dst, tx + 1, base_y + y, tz, BLK_WOOD);
++        dst_set_block(dst, tx, base_y + y, tz + 1, BLK_WOOD);
++        dst_set_block(dst, tx + 1, base_y + y, tz + 1, BLK_WOOD);
++        if (y % 3) == 1 {
++            dst_set_block(dst, tx, base_y + y, tz, BLK_INFINITY_RED);
++        }
++        y = y + 1;
++    }
++    let cy = base_y + h;
++    var dy: i32 = -1;
++    while dy <= 2 {
++        let rad: i32 = if dy == 2 { 1 } else if dy == 1 { 2 } else { 3 };
++        var dz: i32 = -rad;
++        while dz <= rad + 1 {
++            var dx: i32 = -rad;
++            while dx <= rad + 1 {
++                let cx2 = dx * 2 - 1;
++                let cz2 = dz * 2 - 1;
++                let r2 = cx2 * cx2 + cz2 * cz2;
++                if r2 <= (rad * 2 + 1) * (rad * 2 + 1) {
++                    if dy == 0 && dx == 0 && dz == 0 {
++                        dst_set_block(dst, tx, cy, tz, BLK_FLOWER_Y_CORE);
++                    } else if dy == 0 && dx == 1 && dz == 1 {
++                        dst_set_block(dst, tx + 1, cy, tz + 1, BLK_WHITE_FLOWER);
++                    } else {
++                        dst_set_block(dst, tx + dx, cy + dy, tz + dz, BLK_LEAVES);
++                    }
++                }
++                dx = dx + 1;
++            }
++            dz = dz + 1;
++        }
++        dy = dy + 1;
++    }
++}
++
+ fn generate_space_blocks(dst: i32) {
+-    // Outer Space: Floating Ying World (base y=5..6 + top crown at (8,7,8) holding Tutorial!)
+-    var dz: i32 = -1;
+-    while dz <= 1 {
+-        var dy: i32 = -1;
+-        while dy <= 0 {
+-            var dx: i32 = -1;
+-            while dx <= 1 {
+-                dst_set_block(dst, 8 + dx, 6 + dy, 8 + dz, BLK_YING_PLANET);
++    // 1. Ying World Planetoid (stepped green/emerald world sphere; (8,7,8) holds Tutorial Island!)
++    var dy: i32 = -2;
++    while dy <= 1 {
++        var dz: i32 = -2;
++        while dz <= 2 {
++            var dx: i32 = -2;
++            while dx <= 2 {
++                let r2 = dx * dx + dy * dy + dz * dz;
++                if r2 <= 5 {
++                    let bx = 8 + dx;
++                    let by = 6 + dy;
++                    let bz = 8 + dz;
++                    if bx == 8 && by == 7 && bz == 8 {
++                        dst_set_block(dst, bx, by, bz, BLK_YING_PLANET);
++                    } else if dy == 1 && (dx != 0 || dz != 0) {
++                        if ((dx + dz) & 1) == 0 { dst_set_block(dst, bx, by, bz, BLK_LEAVES); }
++                    } else if r2 == 5 && dy == -1 {
++                        dst_set_block(dst, bx, by, bz, BLK_LEAVES);
++                    } else {
++                        dst_set_block(dst, bx, by, bz, BLK_YING_PLANET);
++                    }
++                }
+                 dx = dx + 1;
+             }
+-            dy = dy + 1;
++            dz = dz + 1;
+         }
+-        dz = dz + 1;
++        dy = dy + 1;
+     }
+     dst_set_block(dst, 8, 7, 8, BLK_YING_PLANET);
++    dst_set_block(dst, 6, 6, 8, BLK_WHITE_FLOWER);
++    dst_set_block(dst, 10, 6, 8, BLK_FLOWER_Y_CORE);
+ 
+-    // Iconic Orange Mylantis 'M' Block floating in Space!
++    // 2. Iconic Giant Orange Mylantis 'M' Citadel in Outer Space (Blue Ring sits at 13.5, 10.2, 12.5)
++    dst_fill_box(dst, 12, 6, 12, 12, 9, 13, BLK_MYLANTIS_M);
++    dst_fill_box(dst, 15, 6, 12, 15, 9, 13, BLK_MYLANTIS_M);
+     dst_set_block(dst, 13, 8, 12, BLK_MYLANTIS_M);
+-    dst_set_block(dst, 13, 9, 12, BLK_MYLANTIS_M);
+     dst_set_block(dst, 14, 8, 12, BLK_MYLANTIS_M);
++    dst_set_block(dst, 13, 9, 12, BLK_MYLANTIS_M);
+     dst_set_block(dst, 14, 9, 12, BLK_MYLANTIS_M);
++    dst_set_block(dst, 13, 7, 12, BLK_TOPAZ_CHECK);
++    dst_set_block(dst, 14, 7, 12, BLK_TOPAZ_CHECK);
+ 
+-    // Ice World & Desert World Planets
++    // 3. Glacial Spire World Planetoid (crystalline blue ice cluster)
++    dst_fill_box(dst, 2, 8, 11, 4, 9, 13, BLK_ICE);
+     dst_set_block(dst, 3, 9, 12, BLK_ICE_WORLD);
+     dst_set_block(dst, 3, 9, 13, BLK_ICE_WORLD);
++    dst_set_block(dst, 3, 10, 12, BLK_ICE_WORLD);
++    dst_set_block(dst, 2, 10, 11, BLK_GLASS);
++    dst_set_block(dst, 4, 10, 13, BLK_GLASS);
++    dst_set_block(dst, 3, 11, 12, BLK_GLASS);
++
++    // 4. Desert Pyramid World Planetoid (stepped golden sandstone pyramid)
++    dst_fill_box(dst, 2, 3, 3, 4, 3, 5, BLK_SAND);
+     dst_set_block(dst, 3, 4, 4, BLK_DESERT_WORLD);
+     dst_set_block(dst, 4, 4, 4, BLK_DESERT_WORLD);
+-
+-    // Giant Cosmic Black Cube
++    dst_set_block(dst, 2, 4, 4, BLK_GOLD_ORE);
++    dst_set_block(dst, 3, 5, 4, BLK_DESERT_WORLD);
++
++    // 5. Cosmic Black Cube (3x3x3 hollow Menger lattice frame)
++    var cy: i32 = 3;
++    while cy <= 5 {
++        var cz: i32 = 3;
++        while cz <= 5 {
++            var cx: i32 = 11;
++            while cx <= 13 {
++                let mid = (if cx == 12 { 1 } else { 0 }) + (if cy == 4 { 1 } else { 0 }) + (if cz == 4 { 1 } else { 0 });
++                if mid < 2 {
++                    dst_set_block(dst, cx, cy, cz, BLK_BLACK_CUBE);
++                }
++                cx = cx + 1;
++            }
++            cz = cz + 1;
++        }
++        cy = cy + 1;
++    }
+     dst_set_block(dst, 12, 4, 4, BLK_BLACK_CUBE);
+     dst_set_block(dst, 12, 5, 4, BLK_BLACK_CUBE);
++    dst_set_block(dst, 12, 3, 4, BLK_CORE_GATE);
++
++    // 6. Cosmic Asteroids & Alpha Relic
++    dst_set_block(dst, 2, 13, 2, BLK_ALPHA_CUBE);
++    dst_set_block(dst, 3, 13, 2, BLK_GOLD_ORE);
++    dst_set_block(dst, 14, 2, 14, BLK_INFINITY_RED);
++    dst_set_block(dst, 2, 2, 13, BLK_TOPAZ_CHECK);
+ }
+ 
+ fn populate_space_entities(depth: i32) {
+@@ -1295,19 +1404,26 @@ fn populate_space_entities(depth: i32) {
+ }
+ 
+ fn generate_tutorial_blocks(dst: i32) {
+-    // Open Terraced Tutorial Island (2-block thick ground extending seamlessly to edges + iconic Xar landmarks)
++    // 1. Open Terraced Tutorial Island base (y=0 dirt, y=1 grass) + corner glacial pond & shore steps
+     var z: i32 = 0;
+     while z < CHUNK_DIM {
+         var x: i32 = 0;
+         while x < CHUNK_DIM {
+             dst_set_block(dst, x, 0, z, BLK_DIRT);
+-            dst_set_block(dst, x, 1, z, BLK_GRASS);
++            let is_pond = if x >= 1 && x <= 3 && z >= 12 && z <= 14 { 1 } else { 0 };
++            dst_set_block(dst, x, 1, z, if is_pond != 0 { BLK_ICE } else { BLK_GRASS });
+             x = x + 1;
+         }
+         z = z + 1;
+     }
+ 
+-    // Tutorial Hall around (x=4..12, y=2..7, z=2..12) with 2-voxel walls, wide east doorway, windows & skylight
++    // Grassy outer rim terraces (clear of doorway & flowers)
++    dst_fill_box(dst, 0, 2, 0, 1, 2, 3, BLK_GRASS);
++    dst_fill_box(dst, 14, 2, 12, 15, 2, 15, BLK_GRASS);
++    dst_set_block(dst, 0, 3, 0, BLK_LEAVES);
++    dst_set_block(dst, 15, 3, 15, BLK_LEAVES);
++
++    // 2. Iconic Tutorial Hall (x=4..12, y=2..7, z=2..12) with 2-voxel walls, wide east doorway, north/west/south arches & skylight
+     var ry: i32 = 2;
+     while ry <= 7 {
+         var rz: i32 = 2;
+@@ -1319,11 +1435,12 @@ fn generate_tutorial_blocks(dst: i32) {
+                     let is_door = if rx >= 11 && rz >= 6 && rz <= 8 && ry >= 2 && ry <= 4 { 1 } else { 0 };
+                     let is_win =
+                         if (rx <= 5 && rz >= 6 && rz <= 8 && ry >= 3 && ry <= 4) ||
+-                           (rz <= 3 && rx >= 7 && rx <= 9 && ry >= 3 && ry <= 4) ||
++                           (rz <= 3 && rx >= 7 && rx <= 9 && ry >= 2 && ry <= 4) ||
+                            (rz >= 11 && rx >= 7 && rx <= 9 && ry >= 3 && ry <= 5) { 1 } else { 0 };
+                     let is_sky = if ry >= 6 && rx >= 7 && rx <= 9 && rz >= 5 && rz <= 9 { 1 } else { 0 };
+                     if is_door == 0 && is_win == 0 && is_sky == 0 {
+-                        dst_set_block(dst, rx, ry, rz, BLK_WALL_TUT);
++                        let trim = if ry == 7 && (rx == 4 || rx == 12) && (rz == 2 || rz == 12) { 1 } else { 0 };
++                        dst_set_block(dst, rx, ry, rz, if trim != 0 { BLK_GOLD_ORE } else { BLK_WALL_TUT });
+                     }
+                 }
+                 rx = rx + 1;
+@@ -1333,35 +1450,54 @@ fn generate_tutorial_blocks(dst: i32) {
+         ry = ry + 1;
+     }
+ 
+-    // Embedded 2-level micro-hole alcoves inside Tutorial Hall's 2-voxel wall thickness
++    // Embedded 2-level micro-hole alcoves inside Tutorial Hall walls
+     dst_set_block(dst, 5, 3, 4, BLK_AIR);
+     dst_set_block(dst, 4, 3, 4, BLK_ALPHA_CUBE);
+     dst_set_block(dst, 11, 3, 10, BLK_AIR);
+     dst_set_block(dst, 12, 3, 10, BLK_BLACK_CUBE);
+     dst_set_block(dst, 12, 4, 10, BLK_GOLD_ORE);
+ 
+-    // Iconic Tutorial Black Cube straight ahead at (8, 2..3, 9) -> Ying Forest
++    // 3. Inside Tutorial Hall (spawn at 8.5, 3.2, 5.2 facing +Z toward Black Cube at (8, 2..3, 9))
+     dst_set_block(dst, 8, 2, 9, BLK_BLACK_CUBE);
+     dst_set_block(dst, 8, 3, 9, BLK_BLACK_CUBE);
+-    dst_set_block(dst, 6, 2, 7, BLK_TOME);        // Xar Tutorial Tome
+-    dst_set_block(dst, 10, 2, 7, BLK_BUY_STATION); // Tutorial Buy Station
+-    dst_set_block(dst, 12, 2, 7, BLK_UPGRADE_STATION); // Upgrade Station (gold sink)
+-    dst_set_block(dst, 6, 2, 9, BLK_CRATE);        // Destructible crate with starting Gold
+-
+-    // Outside Tutorial Hall: Small White Flower, Mystery [?] Pillar, Hazard Crate, TEXT Beacon, HP & Sell
+-    dst_set_block(dst, 13, 2, 8, BLK_WOOD);
++    dst_set_block(dst, 6, 2, 7, BLK_TOME);
++    dst_set_block(dst, 10, 2, 7, BLK_BUY_STATION);
++    dst_set_block(dst, 10, 2, 5, BLK_UPGRADE_STATION);
++    dst_set_block(dst, 6, 2, 9, BLK_CRATE);
++
++    // 4. Sculpted 3D Small White Flower Garden (east of hall, keeping (13.5, 5.2, 8.5) clear for Green Ring!)
++    dst_set_block(dst, 13, 2, 9, BLK_WOOD);
++    dst_set_block(dst, 13, 3, 9, BLK_POLLEN);
++    dst_set_block(dst, 12, 3, 9, BLK_PETAL_W);
++    dst_set_block(dst, 14, 3, 9, BLK_PETAL_W);
+     dst_set_block(dst, 13, 3, 8, BLK_PETAL_W);
+-    dst_set_block(dst, 12, 3, 8, BLK_PETAL_W);
+-    dst_set_block(dst, 14, 3, 8, BLK_PETAL_W);
+-    dst_set_block(dst, 13, 4, 8, BLK_WHITE_FLOWER);
+-
++    dst_set_block(dst, 13, 3, 10, BLK_PETAL_W);
++    dst_set_block(dst, 13, 4, 9, BLK_WHITE_FLOWER);
++
++    // 5. Sculpted 3D Small Yellow Flower & Ying Sapling (west courtyard)
++    dst_set_block(dst, 2, 2, 10, BLK_WOOD);
++    dst_set_block(dst, 2, 3, 10, BLK_POLLEN);
++    dst_set_block(dst, 1, 3, 10, BLK_PETAL_Y);
++    dst_set_block(dst, 3, 3, 10, BLK_PETAL_Y);
++    dst_set_block(dst, 2, 3, 9, BLK_PETAL_Y);
++    dst_set_block(dst, 2, 3, 11, BLK_PETAL_Y);
++    dst_set_block(dst, 2, 4, 10, BLK_FLOWER_Y_CORE);
++
++    // 6. Watchtower & Courtyard Landmarks
++    dst_set_block(dst, 2, 2, 2, BLK_STONE);
++    dst_set_block(dst, 2, 3, 2, BLK_WALL_TUT);
++    dst_set_block(dst, 2, 4, 2, BLK_STONE);
++    dst_set_block(dst, 2, 5, 2, BLK_UPG_HP);
+     dst_set_block(dst, 2, 2, 4, BLK_MYSTERY_Q);
+     dst_set_block(dst, 2, 3, 4, BLK_MYSTERY_Q);
+-    dst_set_block(dst, 2, 2, 8, BLK_HAZARD_NUKE);
++    dst_set_block(dst, 2, 2, 7, BLK_HAZARD_NUKE);
++
++    // South Observation Deck & Sell/Mining Practice
+     dst_set_block(dst, 11, 2, 14, BLK_PETAL_Y);
+     dst_set_block(dst, 11, 3, 14, BLK_TEXT_BLOCK);
+-    dst_set_block(dst, 3, 2, 13, BLK_UPG_HP);
+     dst_set_block(dst, 14, 2, 2, BLK_SELL_STATION);
++    dst_set_block(dst, 13, 2, 13, BLK_TOPAZ_CHECK);
++    dst_set_block(dst, 14, 2, 13, BLK_GOLD_ORE);
+ }
+ 
+ fn populate_tutorial_entities() {
+@@ -1374,15 +1510,24 @@ fn populate_tutorial_entities() {
+ 
+ fn generate_ying_forest_blocks(dst: i32, seed: u64) {
+     var ls = splitmix64(seed ^ 0x59494e47);
+-    // Open-horizon Steam FBW Ying Forest: rolling terraced meadow across all edges + towering canopies
++    let arch = (ls % 4) as! i32;
++
++    // Seamless open-horizon meadow floor across all 16x16 edges + soft undulating corner hillocks
+     var z: i32 = 0;
+     while z < CHUNK_DIM {
+         var x: i32 = 0;
+         while x < CHUNK_DIM {
+             dst_set_block(dst, x, 0, z, BLK_DIRT);
+-            let is_pond = if (x >= 2 && x <= 4 && z >= 11 && z <= 13) { 1 } else { 0 };
+-            dst_set_block(dst, x, 1, z, if is_pond != 0 { BLK_ICE } else { BLK_GRASS });
+-            // Terraced border mounds on corners only (keeping wide cardinal sightlines open across chunks!)
++            var floor_blk: u8 = BLK_GRASS;
++            if arch == 1 && x >= 5 && x <= 9 && z >= 11 && z <= 14 {
++                floor_blk = BLK_ICE;
++            } else if arch == 0 && x >= 2 && x <= 4 && z >= 11 && z <= 13 {
++                floor_blk = BLK_ICE;
++            } else if arch == 2 && x >= 2 && x <= 4 && z >= 11 && z <= 13 {
++                floor_blk = if ((x + z) & 1) == 0 { BLK_TOPAZ_CHECK } else { BLK_STONE };
++            }
++            dst_set_block(dst, x, 1, z, floor_blk);
++
+             let is_corner = if (x <= 1 || x >= 14) && (z <= 1 || z >= 14) { 1 } else { 0 };
+             if is_corner != 0 {
+                 dst_set_block(dst, x, 2, z, BLK_GRASS);
+@@ -1396,74 +1541,117 @@ fn generate_ying_forest_blocks(dst: i32, seed: u64) {
+         z = z + 1;
+     }
+ 
+-    // Scattered natural green shrubs / stepped cacti mounds matching Ying Forest & Botany screenshots
++    // Scattered natural meadow shrubs away from cardinal paths & entity clearing (x=5..11, z=5..10)
+     var sh: i32 = 0;
+     while sh < 4 {
+         ls = splitmix64(ls);
+         let sx = 2 + ((ls % 12) as! i32);
+         ls = splitmix64(ls);
+         let sz = 2 + ((ls % 12) as! i32);
+-        if (sx < 6 || sx > 10) && (sz < 5 || sz > 9) {
++        if (sx < 4 || sx > 11) && (sz < 5 || sz > 10) {
+             dst_set_block(dst, sx, 2, sz, BLK_GRASS);
+             if (ls & 2) != 0 { dst_set_block(dst, sx, 3, sz, BLK_LEAVES); }
+         }
+         sh = sh + 1;
+     }
+ 
+-    // Seed-varied Ying Trees with Infinity-Red bark markers & Yellow Flower canopy buds
+-    let t1x = 4 + ((ls % 2) as! i32);
+-    ls = splitmix64(ls);
+-    let t2z = 10 + ((ls % 2) as! i32);
+-    build_ying_tree_to(dst, t1x, 11, 2, 4, 1);
+-    dst_set_block(dst, t1x, 3, 11, BLK_INFINITY_RED);
+-    build_ying_tree_to(dst, 11, t2z, 2, 4 + ((ls & 1) as! i32), 0);
+-    build_ying_tree_to(dst, 11, 4, 2, 5, 1);
+-    dst_set_block(dst, 11, 4, 4, BLK_INFINITY_RED);
+-
+-    // Totem Pole + Health Regen House + Mystery [?] Pillar
+-    dst_set_block(dst, 2, 2, 4, BLK_WOOD);
+-    dst_set_block(dst, 2, 3, 4, BLK_STONE);
+-    dst_set_block(dst, 2, 4, 4, BLK_WOOD);
+-    dst_set_block(dst, 2, 5, 4, BLK_UPG_REGEN);
+-
+-    dst_set_block(dst, 4, 2, 3, BLK_MYSTERY_Q);
+-    dst_set_block(dst, 4, 3, 3, BLK_MYSTERY_Q);
+-
+-    // Yellow Stepped Pyramid Altar / Jumbo Yellow Flower -> Yellow Flower Labyrinth + floating TEXT
+-    dst_set_block(dst, 8, 2, 11, BLK_PETAL_Y);
+-    dst_set_block(dst, 7, 2, 11, BLK_PETAL_Y);
+-    dst_set_block(dst, 9, 2, 11, BLK_PETAL_Y);
+-    dst_set_block(dst, 8, 2, 10, BLK_PETAL_Y);
+-    dst_set_block(dst, 8, 2, 12, BLK_PETAL_Y);
+-    var fz: i32 = 9;
+-    while fz <= 13 {
+-        var fx: i32 = 6;
+-        while fx <= 10 {
+-            let dx = fx - 8;
+-            let dz = fz - 11;
+-            let r2 = dx * dx + dz * dz;
+-            if r2 <= 4 {
+-                if r2 <= 1 { dst_set_block(dst, fx, 3, fz, BLK_POLLEN); }
+-                else { dst_set_block(dst, fx, 4, fz, BLK_PETAL_Y); }
++    if arch == 0 {
++        // Archetype 0: Classic Ying Flower Clearing & Altar
++        build_ying_tree_to(dst, 3, 12, 2, 5, 1);
++        build_ying_tree_to(dst, 12, 11, 2, 4, 0);
++        build_ying_tree_to(dst, 12, 3, 2, 5, 1);
++
++        // Giant 3D Yellow Flower Altar (centered at 8, 12 so (6,3,10) & (10,2,10) stay clear)
++        dst_set_block(dst, 8, 2, 12, BLK_WOOD);
++        var fz: i32 = 10;
++        while fz <= 14 {
++            var fx: i32 = 6;
++            while fx <= 10 {
++                let dx = fx - 8;
++                let dz = fz - 12;
++                let r2 = dx * dx + dz * dz;
++                if r2 <= 4 {
++                    if r2 <= 1 { dst_set_block(dst, fx, 3, fz, BLK_POLLEN); }
++                    else { dst_set_block(dst, fx, 4, fz, BLK_PETAL_Y); }
++                }
++                fx = fx + 1;
+             }
+-            fx = fx + 1;
++            fz = fz + 1;
+         }
+-        fz = fz + 1;
+-    }
+-    dst_set_block(dst, 8, 4, 11, BLK_FLOWER_Y_CORE);
+-    dst_set_block(dst, 8, 6, 11, BLK_TEXT_BLOCK);
+-
+-    // Small White Flower -> Alpha Cube, Black Cube Monolith -> I1/I2 Lattice, Mineral Pockets
+-    dst_set_block(dst, 5, 2, 4, BLK_WHITE_FLOWER);
+-    dst_set_block(dst, 13, 2, 9, BLK_BLACK_CUBE);
+-    dst_set_block(dst, 13, 3, 9, BLK_BLACK_CUBE);
++        dst_set_block(dst, 8, 4, 12, BLK_FLOWER_Y_CORE);
++        dst_set_block(dst, 8, 6, 12, BLK_TEXT_BLOCK);
++
++        // Totem Shrine
++        dst_set_block(dst, 2, 2, 4, BLK_WOOD);
++        dst_set_block(dst, 2, 3, 4, BLK_STONE);
++        dst_set_block(dst, 2, 4, 4, BLK_WOOD);
++        dst_set_block(dst, 2, 5, 4, BLK_UPG_REGEN);
++        dst_set_block(dst, 4, 2, 3, BLK_MYSTERY_Q);
++        dst_set_block(dst, 4, 3, 3, BLK_MYSTERY_Q);
++        dst_set_block(dst, 5, 2, 4, BLK_WHITE_FLOWER);
++        dst_set_block(dst, 13, 2, 9, BLK_BLACK_CUBE);
++        dst_set_block(dst, 13, 3, 9, BLK_BLACK_CUBE);
++    } else if arch == 1 {
++        // Archetype 1: Twin Colossal 2x2 Ying Trees + Sky-Canopy Bridge & Frozen Pond
++        build_colossal_ying_tree_to(dst, 2, 11, 2, 6);
++        build_colossal_ying_tree_to(dst, 12, 11, 2, 6);
++        // Canopy walkway linking both giant canopies at y=8
++        var bx: i32 = 4;
++        while bx <= 11 {
++            dst_set_block(dst, bx, 8, 12, BLK_WOOD);
++            if bx == 7 || bx == 8 { dst_set_block(dst, bx, 9, 12, BLK_ALPHA_CUBE); }
++            bx = bx + 1;
++        }
++        dst_set_block(dst, 7, 2, 13, BLK_WHITE_FLOWER);
++        dst_set_block(dst, 12, 2, 3, BLK_BLACK_CUBE);
++        dst_set_block(dst, 12, 3, 3, BLK_BLACK_CUBE);
++        build_ying_tree_to(dst, 3, 3, 2, 4, 1);
++    } else if arch == 2 {
++        // Archetype 2: Ying Totem Ruins & Topaz Quarry Pavilion
++        dst_fill_box(dst, 11, 2, 11, 14, 2, 14, BLK_STONE);
++        dst_fill_box(dst, 11, 3, 11, 11, 5, 11, BLK_WOOD);
++        dst_fill_box(dst, 14, 3, 11, 14, 5, 11, BLK_WOOD);
++        dst_fill_box(dst, 11, 3, 14, 11, 5, 14, BLK_WOOD);
++        dst_fill_box(dst, 14, 3, 14, 14, 5, 14, BLK_WOOD);
++        dst_fill_box(dst, 11, 6, 11, 14, 6, 14, BLK_LEAVES);
++        dst_set_block(dst, 12, 3, 12, BLK_MYLANTIS_M);
++        dst_set_block(dst, 13, 3, 13, BLK_UPG_REGEN);
++
++        dst_set_block(dst, 2, 2, 12, BLK_TOPAZ_CHECK);
++        dst_set_block(dst, 3, 2, 13, BLK_GOLD_ORE);
++        build_ying_tree_to(dst, 3, 3, 2, 5, 1);
++        build_ying_tree_to(dst, 12, 3, 2, 4, 0);
++        dst_set_block(dst, 5, 2, 3, BLK_WHITE_FLOWER);
++    } else {
++        // Archetype 3: Black Cube Monolith Terrace & Twin Flower Sanctuary
++        dst_fill_box(dst, 11, 2, 11, 14, 2, 14, BLK_GRASS);
++        dst_fill_box(dst, 12, 3, 12, 13, 4, 13, BLK_BLACK_CUBE);
++        dst_set_block(dst, 12, 5, 12, BLK_CORE_GATE);
++        dst_set_block(dst, 13, 5, 13, BLK_GOLD_ORE);
++
++        // Twin White + Yellow Flowers in NW meadow
++        dst_set_block(dst, 3, 2, 3, BLK_WOOD);
++        dst_set_block(dst, 3, 3, 3, BLK_POLLEN);
++        dst_set_block(dst, 2, 3, 3, BLK_PETAL_W);
++        dst_set_block(dst, 4, 3, 3, BLK_PETAL_W);
++        dst_set_block(dst, 3, 4, 3, BLK_WHITE_FLOWER);
++
++        dst_set_block(dst, 3, 2, 12, BLK_WOOD);
++        dst_set_block(dst, 3, 3, 12, BLK_POLLEN);
++        dst_set_block(dst, 2, 3, 12, BLK_PETAL_Y);
++        dst_set_block(dst, 4, 3, 12, BLK_PETAL_Y);
++        dst_set_block(dst, 3, 4, 12, BLK_FLOWER_Y_CORE);
++
++        build_ying_tree_to(dst, 12, 3, 2, 5, 1);
++        dst_set_block(dst, 2, 2, 6, BLK_MYSTERY_Q);
++    }
++
++    // Consistent mineral pockets & interactive stations placed clear of all entity spawns
+     dst_set_block(dst, 2, 1, 2, BLK_TOPAZ_CHECK);
+     dst_set_block(dst, 13, 1, 13, BLK_GOLD_ORE);
+-    dst_set_block(dst, 7, 0, 7, BLK_AIR);
+-
+-    // Buy Station, Crates, Hazard Crate, Damage Upgrade & Weapon Module
+     dst_set_block(dst, 10, 2, 6, BLK_BUY_STATION);
+     dst_set_block(dst, 12, 2, 6, BLK_UPGRADE_STATION);
++    dst_set_block(dst, 13, 2, 6, BLK_SELL_STATION);
+     dst_set_block(dst, 6, 2, 8, BLK_CRATE);
+     dst_set_block(dst, 5, 2, 8, BLK_HAZARD_NUKE);
+     dst_set_block(dst, 11, 2, 8, BLK_UPG_DMG);
+@@ -1489,37 +1677,85 @@ fn populate_ying_forest_entities(depth: i32, seed: u64) {
+     let _ = spawn_entity_ex(ENT_AMMO, 5.5, 2.6, 8.5, 1, -1, 0, 5);
+ }
+ 
+-fn generate_white_flower_alpha_blocks(dst: i32, seed: u64) {
+-    // Open-horizon White Flower calyx: crisp pearl/glass floor + corner petal buttresses + Alpha Cube shrine
++fn generate_white_flower_alpha_blocks(dst: i32, seed: u64, parent_blk: u8) {
+     var ls = seed;
+-    var z: i32 = 0;
+-    while z < CHUNK_DIM {
+-        var x: i32 = 0;
+-        while x < CHUNK_DIM {
+-            let pat = if (x >= 6 && x <= 9 && z >= 6 && z <= 9) || ((x + z) % 3) == 0 { 1 } else { 0 };
+-            dst_set_block(dst, x, 0, z, BLK_PETAL_W);
+-            dst_set_block(dst, x, 1, z, if pat != 0 { BLK_PETAL_W } else { BLK_GLASS });
+-            let corner_col = if (x <= 1 || x >= 14) && (z <= 1 || z >= 14) { 1 } else { 0 };
+-            if corner_col != 0 {
+-                var cy: i32 = 2;
+-                while cy <= 7 {
+-                    dst_set_block(dst, x, cy, z, if ((x + cy + z) % 3) == 0 { BLK_GLASS } else { BLK_PETAL_W });
+-                    cy = cy + 1;
++    if parent_blk == BLK_ALPHA_CUBE {
++        // Alpha Cube Hyper-Sanctuary: magenta & crystal glass outer frame + suspended diamond platform
++        var y: i32 = 0;
++        while y < CHUNK_DIM {
++            var z: i32 = 0;
++            while z < CHUNK_DIM {
++                var x: i32 = 0;
++                while x < CHUNK_DIM {
++                    let on_edge_x = if x <= 1 || x >= 14 { 1 } else { 0 };
++                    let on_edge_y = if y <= 1 || y >= 14 { 1 } else { 0 };
++                    let on_edge_z = if z <= 1 || z >= 14 { 1 } else { 0 };
++                    if y <= 1 {
++                        let ring = if (x + z) % 3 == 0 { BLK_GLASS } else { BLK_ALPHA_CUBE };
++                        dst_set_block(dst, x, y, z, if x >= 6 && x <= 9 && z >= 6 && z <= 9 { BLK_TOPAZ_CHECK } else { ring });
++                    } else if (on_edge_x + on_edge_y + on_edge_z) >= 2 {
++                        dst_set_block(dst, x, y, z, if ((x + y + z) & 1) == 0 { BLK_ALPHA_CUBE } else { BLK_GLASS });
++                    }
++                    x = x + 1;
+                 }
++                z = z + 1;
+             }
+-            x = x + 1;
++            y = y + 1;
+         }
+-        z = z + 1;
++        // Floating crystalline cross-bridge at y=6
++        var b: i32 = 2;
++        while b <= 13 {
++            if b != 8 {
++                dst_set_block(dst, b, 6, 8, BLK_GLASS);
++                dst_set_block(dst, 8, 6, b, BLK_GLASS);
++            }
++            b = b + 1;
++        }
++        dst_set_block(dst, 8, 2, 8, BLK_BLACK_CUBE);
++        dst_set_block(dst, 8, 3, 8, BLK_ALPHA_CUBE);
++        dst_set_block(dst, 8, 5, 8, BLK_TEXT_BLOCK);
++    } else {
++        // White Flower Cathedral: luminous pearl & glass floor, golden pollen halo, sweeping corner petal ribs
++        var z: i32 = 0;
++        while z < CHUNK_DIM {
++            var x: i32 = 0;
++            while x < CHUNK_DIM {
++                let dx = x - 7;
++                let dz = z - 7;
++                let r2 = dx * dx + dz * dz;
++                dst_set_block(dst, x, 0, z, BLK_PETAL_W);
++                let top_b: u8 =
++                    if r2 >= 18 && r2 <= 26 { BLK_POLLEN }
++                    else if ((x + z) % 3) == 0 { BLK_GLASS }
++                    else { BLK_PETAL_W };
++                dst_set_block(dst, x, 1, z, top_b);
++                if (x <= 1 || x >= 14) && (z <= 1 || z >= 14) {
++                    var cy: i32 = 2;
++                    while cy <= 9 {
++                        dst_set_block(dst, x, cy, z, if (cy % 3) == 0 { BLK_GLASS } else { BLK_PETAL_W });
++                        cy = cy + 1;
++                    }
++                }
++                x = x + 1;
++            }
++            z = z + 1;
++        }
++        // Overhead inward-curving white petal arches at y=10..12
++        dst_fill_box(dst, 2, 10, 2, 3, 11, 3, BLK_PETAL_W);
++        dst_fill_box(dst, 12, 10, 2, 13, 11, 3, BLK_PETAL_W);
++        dst_fill_box(dst, 2, 10, 12, 3, 11, 13, BLK_PETAL_W);
++        dst_fill_box(dst, 12, 10, 12, 13, 11, 13, BLK_PETAL_W);
++
++        dst_set_block(dst, 8, 2, 8, BLK_ALPHA_CUBE);
++        dst_set_block(dst, 8, 3, 8, BLK_ALPHA_CUBE);
++        dst_set_block(dst, 8, 5, 8, BLK_TEXT_BLOCK);
+     }
+ 
+-    // Stepped Alpha Cube central pedestal + Weapon Module (6:Minigun) + Trophy shrine
+-    dst_set_block(dst, 8, 2, 8, BLK_ALPHA_CUBE);
+-    dst_set_block(dst, 8, 3, 8, BLK_ALPHA_CUBE);
+-    dst_set_block(dst, 8, 5, 8, BLK_TEXT_BLOCK);
+     dst_set_block(dst, 5, 2, 8, BLK_UPG_HP);
+     dst_set_block(dst, 11, 2, 8, BLK_UPG_ARMOR);
+     dst_set_block(dst, 5, 2, 11, BLK_UPG_WEP);
+     dst_set_block(dst, 8, 2, 11, BLK_SELL_STATION);
++    dst_set_block(dst, 10, 2, 11, BLK_UPGRADE_STATION);
+     dst_set_block(dst, 8, 2, 4, BLK_TOME);
+     dst_set_block(dst, 3, 2, 8, BLK_MYSTERY_Q);
+ 
+@@ -1529,7 +1765,7 @@ fn generate_white_flower_alpha_blocks(dst: i32, seed: u64) {
+         let px = 3 + ((ls % 10) as! i32);
+         ls = splitmix64(ls);
+         let pz = 3 + ((ls % 10) as! i32);
+-        if px != 8 || pz != 8 {
++        if (px != 8 || pz != 8) && (px != 6 || pz != 6) && (px != 11 || pz != 5) && (px != 4 || pz != 5) && (px != 11 || pz != 11) {
+             dst_set_block(dst, px, 2, pz, BLK_ALPHA_CUBE);
+             dst_set_block(dst, px, 3, pz, BLK_GOLD_ORE);
+         }
+@@ -1551,7 +1787,246 @@ fn populate_white_flower_alpha_entities(depth: i32) {
+     let _ = spawn_entity_ex(ENT_HEALTH, 9.5, 3.0, 6.5, 1, -1, 0, 4);
+ }
+ 
+-fn generate_black_cube_blocks(dst: i32, seed: u64) {
++fn generate_yellow_flower_blocks(dst: i32, depth: i32, seed: u64) {
++    var ls = splitmix64(seed ^ 0x59454c4c);
++    let variant = (ls % 3) as! i32;
++
++    // 1. Golden petal floor with concentric pollen diamond pattern
++    var z: i32 = 0;
++    while z < CHUNK_DIM {
++        var x: i32 = 0;
++        while x < CHUNK_DIM {
++            let man = (if x > 7 { x - 7 } else { 7 - x }) + (if z > 7 { z - 7 } else { 7 - z });
++            dst_set_block(dst, x, 0, z, BLK_PETAL_Y);
++            dst_set_block(dst, x, 1, z, if man == 4 || man == 8 { BLK_POLLEN } else { BLK_PETAL_Y });
++            x = x + 1;
++        }
++        z = z + 1;
++    }
++
++    // 2. Labyrinth perimeter walls (y=2..5) with wide 4-block cardinal tunnels at 6..9 for seamless multi-chunk maze
++    var y: i32 = 2;
++    while y <= 5 {
++        var i: i32 = 0;
++        while i < CHUNK_DIM {
++            if i < 6 || i > 9 {
++                dst_set_block(dst, i, y, 0, if (y == 5) { BLK_POLLEN } else { BLK_PETAL_Y });
++                dst_set_block(dst, i, y, 15, if (y == 5) { BLK_POLLEN } else { BLK_PETAL_Y });
++                dst_set_block(dst, 0, y, i, if (y == 5) { BLK_POLLEN } else { BLK_PETAL_Y });
++                dst_set_block(dst, 15, y, i, if (y == 5) { BLK_POLLEN } else { BLK_PETAL_Y });
++            }
++            i = i + 1;
++        }
++        y = y + 1;
++    }
++
++    // Interior golden maze partitions (keeping entity & center ring corridors completely clear)
++    var p: i32 = 2;
++    while p <= 5 {
++        dst_set_block(dst, 4, p, 3, BLK_PETAL_Y);
++        dst_set_block(dst, 4, p, 4, BLK_PETAL_Y);
++        dst_set_block(dst, 3, p, 4, BLK_PETAL_Y);
++        if variant != 1 {
++            dst_set_block(dst, 11, p, 11, BLK_PETAL_Y);
++            dst_set_block(dst, 11, p, 12, BLK_PETAL_Y);
++            dst_set_block(dst, 12, p, 11, BLK_PETAL_Y);
++        }
++        p = p + 1;
++    }
++
++    // Locked Nectar Vault in NE corner (x=12..14, z=2..4) with Locked Door at (12,2,3)
++    dst_fill_box(dst, 12, 2, 1, 14, 4, 4, BLK_PETAL_Y);
++    dst_fill_box(dst, 13, 2, 2, 13, 3, 3, BLK_AIR);
++    dst_set_block(dst, 12, 2, 3, BLK_LOCKED_DOOR);
++    dst_set_block(dst, 12, 3, 3, BLK_POLLEN);
++    dst_set_block(dst, 13, 2, 2, BLK_UPG_WEP);
++    dst_set_block(dst, 13, 2, 3, BLK_GOLD_ORE);
++
++    // 3. Upper Pollen Balcony Ring (y=8) + Overhead Petal Crown (y=12..13)
++    var bz: i32 = 2;
++    while bz <= 13 {
++        var bx: i32 = 2;
++        while bx <= 13 {
++            let rim = if (bx == 2 || bx == 13 || bz == 2 || bz == 13) && (bx < 6 || bx > 9) && (bz < 6 || bz > 9) { 1 } else { 0 };
++            if rim != 0 { dst_set_block(dst, bx, 8, bz, BLK_POLLEN); }
++            bx = bx + 1;
++        }
++        bz = bz + 1;
++    }
++    dst_fill_box(dst, 0, 12, 0, 2, 13, 2, BLK_PETAL_Y);
++    dst_fill_box(dst, 13, 12, 0, 15, 13, 2, BLK_PETAL_Y);
++    dst_fill_box(dst, 0, 12, 13, 2, 13, 15, BLK_PETAL_Y);
++    dst_fill_box(dst, 13, 12, 13, 15, 13, 15, BLK_PETAL_Y);
++
++    // Stations & Key Landmarks
++    dst_set_block(dst, 5, 2, 8, BLK_BUY_STATION);
++    dst_set_block(dst, 11, 2, 8, BLK_SELL_STATION);
++    dst_set_block(dst, 3, 2, 8, BLK_UPGRADE_STATION);
++    dst_set_block(dst, 8, 2, 4, BLK_UPG_HP);
++    dst_set_block(dst, 8, 2, 12, BLK_KEY_BLOCK);
++    dst_set_block(dst, 4, 2, 12, BLK_MYLANTIS_M);
++    dst_set_block(dst, 8, 2, 10, BLK_FLOWER_Y_CORE);
++    dst_set_block(dst, 8, 4, 10, BLK_TEXT_BLOCK);
++    dst_set_block(dst, 6, 2, 13, BLK_TOME);
++    dst_set_block(dst, 10, 2, 13, BLK_CRATE);
++    if depth >= 3 { dst_set_block(dst, 11, 2, 13, BLK_SPAWNER); }
++}
++
++fn generate_mylantis_blocks(dst: i32, depth: i32, seed: u64) {
++    var ls = splitmix64(seed ^ 0x4d594c41);
++    let cvar = (ls % 3) as! i32;
++
++    // 1. Subterranean Turquoise Cavern Floor (y=0..2) with Crystal Ice Streams & Topaz Seams
++    var z: i32 = 0;
++    while z < CHUNK_DIM {
++        var x: i32 = 0;
++        while x < CHUNK_DIM {
++            dst_set_block(dst, x, 0, z, BLK_MYLANTIS);
++            let is_stream = if (x == 7 && z >= 10) || (z == 13 && x >= 3 && x <= 7) { 1 } else { 0 };
++            let is_ledge = if (x <= 2 || x >= 13) && (z <= 2 || z >= 13) { 1 } else { 0 };
++            if is_stream != 0 {
++                dst_set_block(dst, x, 1, z, BLK_ICE);
++            } else {
++                dst_set_block(dst, x, 1, z, if ((x * 3 + z) % 7) == 0 { BLK_TOPAZ_CHECK } else { BLK_MYLANTIS });
++                if is_ledge != 0 { dst_set_block(dst, x, 2, z, BLK_MYLANTIS); }
++            }
++            x = x + 1;
++        }
++        z = z + 1;
++    }
++
++    // 2. Cavern Pillars & Organic Roof Vault (y=12..14 with open central sky shaft x=5..10, z=5..10)
++    var y: i32 = 12;
++    while y <= 14 {
++        var cz: i32 = 0;
++        while cz < CHUNK_DIM {
++            var cx: i32 = 0;
++            while cx < CHUNK_DIM {
++                let is_hole = if (cx >= 5 && cx <= 10 && cz >= 5 && cz <= 10) { 1 } else { 0 };
++                let is_border = if (cx <= 2 || cx >= 13 || cz <= 2 || cz >= 13) { 1 } else { 0 };
++                if is_hole == 0 && (y >= 13 || is_border != 0) {
++                    dst_set_block(dst, cx, y, cz, if ((cx + y + cz) % 5) == 0 { BLK_TOPAZ_CHECK } else { BLK_MYLANTIS });
++                }
++                cx = cx + 1;
++            }
++            cz = cz + 1;
++        }
++        y = y + 1;
++    }
++    // Hanging Ice Stalactites
++    dst_fill_box(dst, 3, 10, 3, 3, 12, 3, BLK_ICE);
++    dst_fill_box(dst, 12, 10, 3, 12, 12, 3, BLK_ICE);
++    dst_fill_box(dst, 3, 10, 12, 3, 12, 12, BLK_ICE);
++    dst_fill_box(dst, 12, 10, 12, 12, 12, 12, BLK_ICE);
++
++    // 3. Corner Stalagmites & Cavern Sky-Bridge (keeping entity spawns at (4.5,3,11.5), (5.5,5.5,5.5), (11.5,3.5,11.5) clear)
++    var py: i32 = 2;
++    while py <= 11 {
++        dst_set_block(dst, 2, py, 2, BLK_MYLANTIS);
++        dst_set_block(dst, 13, py, 2, BLK_MYLANTIS);
++        dst_set_block(dst, 2, py, 13, BLK_MYLANTIS);
++        dst_set_block(dst, 13, py, 13, BLK_MYLANTIS);
++        py = py + 1;
++    }
++    if cvar != 2 {
++        var bx: i32 = 3;
++        while bx <= 12 {
++            dst_set_block(dst, bx, 7, 13, BLK_TOPAZ_CHECK);
++            bx = bx + 1;
++        }
++    }
++
++    // 4. Stations, Smuggler Black Market & Locked Vault
++    dst_set_block(dst, 5, 2, 8, BLK_BUY_STATION);
++    dst_set_block(dst, 11, 2, 8, BLK_SELL_STATION);
++    dst_set_block(dst, 3, 2, 8, BLK_UPGRADE_STATION);
++    dst_set_block(dst, 4, 2, 12, BLK_BLACK_MARKET);
++    dst_set_block(dst, 12, 2, 12, BLK_LOCKED_DOOR);
++    dst_set_block(dst, 13, 2, 12, BLK_UPG_AMMO);
++    dst_set_block(dst, 6, 2, 11, BLK_HAZARD_NUKE);
++    dst_set_block(dst, 3, 2, 5, BLK_MYSTERY_Q);
++    dst_set_block(dst, 8, 2, 4, BLK_UPG_ROF);
++    dst_set_block(dst, 8, 2, 12, BLK_UPG_SPEED);
++    dst_set_block(dst, 4, 2, 10, BLK_UPG_WEP);
++    dst_set_block(dst, 4, 2, 8, BLK_BLACK_CUBE);
++    dst_set_block(dst, 9, 2, 11, BLK_MYLANTIS_M);
++    dst_set_block(dst, 8, 2, 8, BLK_TOME);
++    dst_set_block(dst, 11, 2, 4, BLK_TOPAZ_CHECK);
++    if depth >= 3 { dst_set_block(dst, 10, 2, 11, BLK_SPAWNER); }
++}
++
++fn generate_inner_core_blocks(dst: i32, depth: i32, seed: u64) {
++    let _ = seed;
++    // Imperial Magenta & Gold Core Arena where The Singularity Boss & Friend 'K' reside
++    var y: i32 = 0;
++    while y <= 13 {
++        var z: i32 = 0;
++        while z < CHUNK_DIM {
++            var x: i32 = 0;
++            while x < CHUNK_DIM {
++                if y <= 1 {
++                    let dx = x - 7;
++                    let dz = z - 7;
++                    let r2 = dx * dx + dz * dz;
++                    let blk: u8 =
++                        if r2 <= 6 { BLK_STONE }
++                        else if (x == 8 || z == 8) { BLK_GOLD_ORE }
++                        else { BLK_CORE_GATE };
++                    dst_set_block(dst, x, y, z, blk);
++                } else if x <= 1 || x >= 14 || z <= 1 || z >= 14 {
++                    let arch_x = if (z <= 1 || z >= 14) && (x >= 6 && x <= 9 && y >= 2 && y <= 8) { 1 } else { 0 };
++                    let arch_z = if (x <= 1 || x >= 14) && (z >= 6 && z <= 9 && y >= 2 && y <= 8) { 1 } else { 0 };
++                    if arch_x == 0 && arch_z == 0 {
++                        let trim = if ((x + y + z) % 4) == 0 { BLK_GOLD_ORE } else if (y == 7) { BLK_INFINITY_RED } else { BLK_CORE_GATE };
++                        dst_set_block(dst, x, y, z, trim);
++                    }
++                }
++                x = x + 1;
++            }
++            z = z + 1;
++        }
++        y = y + 1;
++    }
++
++    // Four Towering Power Pylons + Overhead Cross-Halo Ribs (y=12..13)
++    dst_fill_box(dst, 3, 2, 3, 3, 11, 3, BLK_CORE_GATE);
++    dst_fill_box(dst, 12, 2, 3, 12, 11, 3, BLK_CORE_GATE);
++    dst_fill_box(dst, 3, 2, 12, 3, 11, 12, BLK_CORE_GATE);
++    dst_fill_box(dst, 12, 2, 12, 12, 11, 12, BLK_CORE_GATE);
++    dst_set_block(dst, 3, 12, 3, BLK_INFINITY_RED);
++    dst_set_block(dst, 12, 12, 3, BLK_INFINITY_RED);
++    dst_set_block(dst, 3, 12, 12, BLK_INFINITY_RED);
++    dst_set_block(dst, 12, 12, 12, BLK_INFINITY_RED);
++
++    var r: i32 = 3;
++    while r <= 12 {
++        dst_set_block(dst, r, 13, 3, BLK_CORE_GATE);
++        dst_set_block(dst, r, 13, 12, BLK_CORE_GATE);
++        dst_set_block(dst, 3, 13, r, BLK_CORE_GATE);
++        dst_set_block(dst, 12, 13, r, BLK_CORE_GATE);
++        r = r + 1;
++    }
++
++    // Friend 'K' Sealed Sanctuary Frame at (x=6..10, z=13..15) leaving (8.0, 3.0, 13.6) open inside!
++    dst_fill_box(dst, 6, 2, 13, 6, 5, 14, BLK_GLASS);
++    dst_fill_box(dst, 10, 2, 13, 10, 5, 14, BLK_GLASS);
++    dst_fill_box(dst, 6, 5, 13, 10, 5, 14, BLK_GOLD_ORE);
++
++    // Core Stations & Arsenal
++    dst_set_block(dst, 5, 2, 8, BLK_BUY_STATION);
++    dst_set_block(dst, 11, 2, 8, BLK_SELL_STATION);
++    dst_set_block(dst, 3, 2, 8, BLK_UPGRADE_STATION);
++    dst_set_block(dst, 12, 2, 8, BLK_BLACK_MARKET);
++    dst_set_block(dst, 8, 2, 4, BLK_UPG_ARMOR);
++    dst_set_block(dst, 8, 2, 11, BLK_UPG_HP);
++    dst_set_block(dst, 4, 2, 8, BLK_BLACK_CUBE);
++    dst_set_block(dst, 8, 2, 8, BLK_UPG_WEP);
++    dst_set_block(dst, 10, 2, 5, BLK_TOME);
++    dst_set_block(dst, 4, 2, 4, BLK_CRATE);
++    if depth >= 3 { dst_set_block(dst, 11, 2, 10, BLK_SPAWNER); }
++}
++
++fn generate_black_cube_blocks(dst: i32, depth: i32, seed: u64) {
+     // Authentic 3D Menger Sponge Lattice (I1 / I2 / I3) — crisp grey/charcoal beams & open cross-shafts
+     var y: i32 = 0;
+     while y < CHUNK_DIM {
+@@ -1571,7 +2046,9 @@ fn generate_black_cube_blocks(dst: i32, seed: u64) {
+ 
+                 if mid1 < 2 && mid2 < 2 {
+                     let is_frame = if x == 0 || x == 15 || y == 0 || y == 15 || z == 0 || z == 15 { 1 } else { 0 };
+-                    if is_frame != 0 && ((x + y + z) % 7 == 0) {
++                    if depth >= 5 && (x == 0 || x == 15) && (y == 0 || y == 15) && (z == 0 || z == 15) {
++                        dst_set_block(dst, x, y, z, BLK_INFINITY_RED);
++                    } else if is_frame != 0 && ((x + y + z) % 7 == 0) {
+                         dst_set_block(dst, x, y, z, BLK_GLASS);
+                     } else {
+                         dst_set_block(dst, x, y, z, BLK_BLACK_CUBE);
+@@ -1607,21 +2084,25 @@ fn generate_black_cube_blocks(dst: i32, seed: u64) {
+     dst_set_block(dst, 4, 2, 8, BLK_CORE_GATE);
+     dst_set_block(dst, 11, 2, 8, BLK_CORE_GATE);
+     dst_set_block(dst, 9, 1, 6, BLK_HAZARD_NUKE);
++    if depth >= 3 { dst_set_block(dst, 10, 1, 10, BLK_SPAWNER); }
+ }
+ 
+ fn generate_ice_world_blocks(dst: i32, seed: u64) {
+     var ls = splitmix64(seed ^ 0x49434557);
+-    // Open glacial plateau with crystal pillars on corners (seamless across chunk edges)
++    let ivar = (ls & 1) as! i32;
++    // Contoured Glacial Tundra with Towering Hollow Ice Spires & Sky Bridges
+     var z: i32 = 0;
+     while z < CHUNK_DIM {
+         var x: i32 = 0;
+         while x < CHUNK_DIM {
+             dst_set_block(dst, x, 0, z, BLK_ICE);
++            let is_ridge = if (x <= 2 || x >= 13) && (z <= 2 || z >= 13) { 1 } else { 0 };
+             dst_set_block(dst, x, 1, z, if ((x + z) & 1) == 0 { BLK_ICE } else { BLK_GLASS });
+-            if (x <= 1 || x >= 14) && (z <= 1 || z >= 14) {
++            if is_ridge != 0 {
++                let h = if (x == 0 || x == 15) && (z == 0 || z == 15) { 11 } else if (x <= 1 || x >= 14) && (z <= 1 || z >= 14) { 8 } else { 4 };
+                 var py: i32 = 2;
+-                while py <= 8 {
+-                    dst_set_block(dst, x, py, z, if ((x + py + z) % 3) == 0 { BLK_PETAL_W } else { BLK_ICE });
++                while py <= h {
++                    dst_set_block(dst, x, py, z, if (py % 3) == 0 { BLK_PETAL_W } else if (py % 2) == 0 { BLK_ICE } else { BLK_GLASS });
+                     py = py + 1;
+                 }
+             }
+@@ -1629,13 +2110,31 @@ fn generate_ice_world_blocks(dst: i32, seed: u64) {
+         }
+         z = z + 1;
+     }
++
++    // Crystal Sky-Bridges connecting the corner glacial spires at y=7
++    if ivar == 0 {
++        var b: i32 = 2;
++        while b <= 13 {
++            dst_set_block(dst, b, 7, 2, BLK_GLASS);
++            dst_set_block(dst, b, 7, 13, BLK_GLASS);
++            b = b + 1;
++        }
++    } else {
++        var b: i32 = 2;
++        while b <= 13 {
++            dst_set_block(dst, 2, 7, b, BLK_GLASS);
++            dst_set_block(dst, 13, 7, b, BLK_GLASS);
++            b = b + 1;
++        }
++    }
++
+     var c: i32 = 0;
+     while c < 4 {
+         ls = splitmix64(ls);
+         let sx = 3 + ((ls % 10) as! i32);
+         ls = splitmix64(ls);
+         let sz = 3 + ((ls % 10) as! i32);
+-        if sx < 6 || sx > 9 || sz < 6 || sz > 9 {
++        if (sx < 5 || sx > 10) && (sz < 5 || sz > 10) {
+             dst_set_block(dst, sx, 2, sz, BLK_ICE);
+             dst_set_block(dst, sx, 3, sz, BLK_GLASS);
+             dst_set_block(dst, sx, 4, sz, BLK_ICE_WORLD);
+@@ -1654,7 +2153,8 @@ fn generate_ice_world_blocks(dst: i32, seed: u64) {
+ 
+ fn generate_desert_world_blocks(dst: i32, seed: u64) {
+     var ls = splitmix64(seed ^ 0x44455354);
+-    // Open Sandstone Terrace & Stepped Pyramid Altar
++    let dvar = (ls % 2) as! i32;
++    // Open Sandstone Terrace + Hollow Stepped Pharaoh Pyramid & Corner Obelisks
+     var z: i32 = 0;
+     while z < CHUNK_DIM {
+         var x: i32 = 0;
+@@ -1663,8 +2163,8 @@ fn generate_desert_world_blocks(dst: i32, seed: u64) {
+             dst_set_block(dst, x, 1, z, if (x == 8 || z == 8) { BLK_GOLD_ORE } else { BLK_SAND });
+             if (x <= 1 || x >= 14) && (z <= 1 || z >= 14) {
+                 var py: i32 = 2;
+-                while py <= 6 {
+-                    dst_set_block(dst, x, py, z, if (py % 3) == 0 { BLK_GOLD_ORE } else { BLK_SAND });
++                while py <= 8 {
++                    dst_set_block(dst, x, py, z, if (py % 3) == 0 || py == 8 { BLK_GOLD_ORE } else { BLK_SAND });
+                     py = py + 1;
+                 }
+             }
+@@ -1672,21 +2172,50 @@ fn generate_desert_world_blocks(dst: i32, seed: u64) {
+         }
+         z = z + 1;
+     }
+-    var p: i32 = 0;
+-    while p < 3 {
+-        ls = splitmix64(ls);
+-        let px = 4 + ((ls % 8) as! i32);
+-        ls = splitmix64(ls);
+-        let pz = 4 + ((ls % 8) as! i32);
+-        if px != 8 || pz != 8 {
+-            dst_set_block(dst, px, 2, pz, BLK_SAND);
+-            dst_set_block(dst, px, 3, pz, BLK_DESERT_WORLD);
++
++    // Hollow Stepped Sandstone Pyramid (x=3..12, z=3..12, y=2..6) with 4 cardinal entrances (6..9)
++    if dvar == 0 {
++        var tier: i32 = 0;
++        while tier < 4 {
++            let y = 2 + tier;
++            let lo = 3 + tier;
++            let hi = 12 - tier;
++            var pz: i32 = lo;
++            while pz <= hi {
++                var px: i32 = lo;
++                while px <= hi {
++                    let shell = if px == lo || px == hi || pz == lo || pz == hi { 1 } else { 0 };
++                    let gate = if tier <= 2 && ((px >= 7 && px <= 8) || (pz >= 7 && pz <= 8)) { 1 } else { 0 };
++                    if shell != 0 && gate == 0 {
++                        dst_set_block(dst, px, y, pz, if tier == 3 { BLK_GOLD_ORE } else { BLK_SAND });
++                    }
++                    px = px + 1;
++                }
++                pz = pz + 1;
++            }
++            tier = tier + 1;
++        }
++        dst_set_block(dst, 7, 6, 7, BLK_DESERT_WORLD);
++        dst_set_block(dst, 8, 6, 8, BLK_DESERT_WORLD);
++    } else {
++        var p: i32 = 0;
++        while p < 3 {
++            ls = splitmix64(ls);
++            let px = 4 + ((ls % 8) as! i32);
++            ls = splitmix64(ls);
++            let pz = 4 + ((ls % 8) as! i32);
++            if px != 8 || pz != 8 {
++                dst_set_block(dst, px, 2, pz, BLK_SAND);
++                dst_set_block(dst, px, 3, pz, BLK_DESERT_WORLD);
++            }
++            p = p + 1;
+         }
+-        p = p + 1;
+     }
++
+     dst_set_block(dst, 8, 2, 11, BLK_DESERT_WORLD);
+     dst_set_block(dst, 5, 2, 8, BLK_SELL_STATION);
+     dst_set_block(dst, 11, 2, 8, BLK_BLACK_MARKET);
++    dst_set_block(dst, 13, 2, 8, BLK_UPGRADE_STATION);
+     dst_set_block(dst, 8, 2, 4, BLK_KEY_BLOCK);
+     dst_set_block(dst, 11, 2, 4, BLK_LOCKED_DOOR);
+     dst_set_block(dst, 12, 2, 4, BLK_UPG_DMG);
+@@ -1695,7 +2224,7 @@ fn generate_desert_world_blocks(dst: i32, seed: u64) {
+ 
+ fn generate_interior_biome_blocks(dst: i32, biome: i32, depth: i32, seed: u64) {
+     if biome == BIOME_BLACK_CUBE {
+-        generate_black_cube_blocks(dst, seed);
++        generate_black_cube_blocks(dst, depth, seed);
+         return;
+     }
+     if biome == BIOME_ICE_WORLD {
+@@ -1706,111 +2235,15 @@ fn generate_interior_biome_blocks(dst: i32, biome: i32, depth: i32, seed: u64) {
+         generate_desert_world_blocks(dst, seed);
+         return;
+     }
+-
+-    var ls = seed;
+-    let wall_blk: u8 =
+-        if biome == BIOME_YELLOW_FLOWER { BLK_PETAL_Y }
+-        else if biome == BIOME_MYLANTIS { BLK_MYLANTIS }
+-        else { BLK_CORE_GATE };
+-    let trim_blk: u8 =
+-        if biome == BIOME_YELLOW_FLOWER { BLK_POLLEN }
+-        else if biome == BIOME_MYLANTIS { BLK_TOPAZ_CHECK }
+-        else { BLK_GOLD_ORE };
+-
+-    // Open-horizon terraced chambers for Yellow Flower / Mylantis; enclosed Core Arena for Inner Core
+-    let enclose: i32 = if biome == BIOME_INNER_CORE { 1 } else { 0 };
+-    var y: i32 = 0;
+-    while y <= 11 {
+-        var z: i32 = 0;
+-        while z < CHUNK_DIM {
+-            var x: i32 = 0;
+-            while x < CHUNK_DIM {
+-                let is_floor = if y <= 1 { 1 } else { 0 };
+-                let is_rim = if enclose != 0 {
+-                    if x <= 1 || x >= 14 || z <= 1 || z >= 14 { 1 } else { 0 }
+-                } else {
+-                    if (x <= 1 || x >= 14) && (z <= 1 || z >= 14) { 1 } else { 0 }
+-                };
+-                if is_floor != 0 {
+-                    if ((x + z) % 5) == 0 { dst_set_block(dst, x, y, z, trim_blk); }
+-                    else { dst_set_block(dst, x, y, z, wall_blk); }
+-                } else if is_rim != 0 {
+-                    let arch_x = if enclose != 0 && (z <= 1 || z >= 14) && (x >= 6 && x <= 9 && y >= 2 && y <= 7) { 1 } else { 0 };
+-                    let arch_z = if enclose != 0 && (x <= 1 || x >= 14) && (z >= 6 && z <= 9 && y >= 2 && y <= 7) { 1 } else { 0 };
+-                    if arch_x == 0 && arch_z == 0 {
+-                        if ((x + y + z) % 4) == 0 { dst_set_block(dst, x, y, z, trim_blk); }
+-                        else { dst_set_block(dst, x, y, z, wall_blk); }
+-                    }
+-                }
+-                x = x + 1;
+-            }
+-            z = z + 1;
+-        }
+-        y = y + 1;
+-    }
+-
+-    // Floating stepped fractal bridges & canyon arches
+-    var p: i32 = 0;
+-    while p < 4 {
+-        ls = splitmix64(ls);
+-        let px = 3 + ((ls % 9) as! i32);
+-        ls = splitmix64(ls);
+-        let pz = 3 + ((ls % 9) as! i32);
+-        ls = splitmix64(ls);
+-        let py = 4 + ((ls % 6) as! i32);
+-        var dz: i32 = -1;
+-        while dz <= 1 {
+-            var dx: i32 = -1;
+-            while dx <= 1 {
+-                if dx != 0 || dz != 0 {
+-                    let tx = px + dx;
+-                    let tz = pz + dz;
+-                    if (tx >= 2 && tx <= 13 && tz >= 2 && tz <= 13) && (tx < 7 || tx > 9 || tz < 6 || tz > 9) {
+-                        dst_set_block(dst, tx, py, tz, wall_blk);
+-                    }
+-                }
+-                dx = dx + 1;
+-            }
+-            dz = dz + 1;
+-        }
+-        p = p + 1;
++    if biome == BIOME_YELLOW_FLOWER {
++        generate_yellow_flower_blocks(dst, depth, seed);
++        return;
+     }
+-
+-    dst_set_block(dst, 5, 2, 8, BLK_BUY_STATION);
+-    dst_set_block(dst, 11, 2, 8, BLK_SELL_STATION);
+-    dst_set_block(dst, 3, 2, 8, BLK_UPGRADE_STATION);
+-    dst_set_block(dst, 4, 2, 4, BLK_CRATE);
+-    dst_set_block(dst, 11, 2, 4, BLK_TOPAZ_CHECK);
+-    if depth >= 3 { dst_set_block(dst, 11, 2, 11, BLK_SPAWNER); }
+     if biome == BIOME_MYLANTIS {
+-        dst_set_block(dst, 4, 2, 12, BLK_BLACK_MARKET);
+-        dst_set_block(dst, 12, 2, 12, BLK_LOCKED_DOOR);
+-        dst_set_block(dst, 12, 2, 13, BLK_UPG_AMMO);
+-        dst_set_block(dst, 6, 2, 11, BLK_HAZARD_NUKE);
+-        dst_set_block(dst, 3, 2, 5, BLK_MYSTERY_Q);
+-    }
+-
+-    if biome == BIOME_YELLOW_FLOWER {
+-        dst_set_block(dst, 8, 2, 4, BLK_UPG_HP);
+-        dst_set_block(dst, 8, 2, 12, BLK_KEY_BLOCK);
+-        dst_set_block(dst, 5, 2, 12, BLK_UPG_WEP);
+-        dst_set_block(dst, 4, 2, 8, BLK_MYLANTIS_M);
+-        dst_set_block(dst, 8, 2, 10, BLK_FLOWER_Y_CORE);
+-        dst_set_block(dst, 8, 4, 10, BLK_TEXT_BLOCK);
+-    } else if biome == BIOME_MYLANTIS {
+-        dst_set_block(dst, 8, 2, 4, BLK_UPG_ROF);
+-        dst_set_block(dst, 8, 2, 12, BLK_UPG_SPEED);
+-        dst_set_block(dst, 4, 2, 10, BLK_UPG_WEP);
+-        dst_set_block(dst, 4, 2, 8, BLK_BLACK_CUBE);
+-        dst_set_block(dst, 9, 2, 11, BLK_MYLANTIS_M);
+-        dst_set_block(dst, 8, 2, 8, BLK_TOME);
+-    } else {
+-        dst_set_block(dst, 8, 2, 4, BLK_UPG_ARMOR);
+-        dst_set_block(dst, 8, 2, 12, BLK_UPG_HP);
+-        dst_set_block(dst, 4, 2, 8, BLK_BLACK_CUBE);
+-        dst_set_block(dst, 8, 2, 8, BLK_UPG_WEP);
+-        dst_set_block(dst, 10, 2, 5, BLK_TOME);
++        generate_mylantis_blocks(dst, depth, seed);
++        return;
+     }
++    generate_inner_core_blocks(dst, depth, seed);
+ }
+ 
+ fn populate_interior_biome_entities(biome: i32, depth: i32) {
+@@ -1968,6 +2401,7 @@ fn generate_generic_hollow_block(dst: i32, blk: u8, depth: i32, seed: u64) {
+         else if blk == BLK_PETAL_W { BLK_ICE }
+         else if blk == BLK_MYLANTIS || blk == BLK_TOPAZ_CHECK { BLK_ICE }
+         else if blk == BLK_GOLD_ORE || blk == BLK_CRATE || blk == BLK_HAZARD_NUKE { BLK_GOLD_ORE }
++        else if blk == BLK_INFINITY_RED { BLK_CORE_GATE }
+         else { BLK_SAND };
+ 
+     let off_a: i32 = 2 + (((ls >> 3) % 2) as! i32);
+@@ -2195,7 +2629,7 @@ fn generate_chunk_blocks_to(dst_layer: i32, depth: i32, biome: i32, parent_blk:
+     } else if biome == BIOME_YING_FOREST {
+         generate_ying_forest_blocks(dst_layer, seed);
+     } else if biome == BIOME_WHITE_FLOWER {
+-        generate_white_flower_alpha_blocks(dst_layer, seed);
++        generate_white_flower_alpha_blocks(dst_layer, seed, parent_blk);
+     } else {
+         generate_interior_biome_blocks(dst_layer, biome, depth, seed);
+     }

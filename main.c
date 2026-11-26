@@ -29,6 +29,8 @@ extern struct android_app * gapp;
 static char g_crash_text[4096];
 static int  g_crash_len = 0;
 static const char* g_data_path = "";
+static char g_save_path[512];
+static volatile int g_goose_started = 0;
 
 // === Bridge functions for Goose FFI (must be visible for dynamic linking) ===
 __attribute__((visibility("default"))) int get_CNFGPenX(void) { return CNFGPenX; }
@@ -50,6 +52,196 @@ __attribute__((visibility("default"))) void clear_crash(void) { g_crash_len = 0;
 // Workaround for Goose f32 FFI bug on ARM64
 __attribute__((visibility("default"))) void goose_draw_rect(int x1, int y1, int x2, int y2) {
     CNFGTackRectangle((float)x1, (float)y1, (float)x2, (float)y2);
+}
+
+// === Integer-only Atomic Auto-Save Persistence (Zero-ABI-hazard FFI) ===
+#define FBW_SAVE_MAGIC 0x53574246u /* 'FBWS' */
+#define FBW_SAVE_VER   1
+#define FBW_SAVE_CAP   65536
+
+static int32_t g_save_buf[FBW_SAVE_CAP];
+static int32_t g_save_len = 0;
+static int32_t g_save_pos = 0;
+
+static uint32_t fbw_save_crc(const int32_t *data, int32_t count) {
+    uint32_t h = 2166136261u;
+    for (int32_t i = 0; i < count; i++) {
+        uint32_t v = (uint32_t)data[i];
+        h ^= (v & 0xFFu); h *= 16777619u;
+        h ^= ((v >> 8) & 0xFFu); h *= 16777619u;
+        h ^= ((v >> 16) & 0xFFu); h *= 16777619u;
+        h ^= ((v >> 24) & 0xFFu); h *= 16777619u;
+    }
+    return h;
+}
+
+static const char* fbw_save_dir(void) {
+    if (g_save_path[0]) return g_save_path;
+    if (g_data_path && g_data_path[0]) return g_data_path;
+    return ".";
+}
+
+static int fbw_write_all(int fd, const void *buf, size_t len) {
+    const uint8_t *p = (const uint8_t *)buf;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = write(fd, p + off, len - off);
+        if (n <= 0) return -1;
+        off += (size_t)n;
+    }
+    return 0;
+}
+
+static int fbw_read_all(int fd, void *buf, size_t len) {
+    uint8_t *p = (uint8_t *)buf;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = read(fd, p + off, len - off);
+        if (n <= 0) return -1;
+        off += (size_t)n;
+    }
+    return 0;
+}
+
+__attribute__((visibility("default"))) int32_t fbw_save_begin(void) {
+    g_save_len = 0;
+    g_save_pos = 0;
+    return 1;
+}
+
+__attribute__((visibility("default"))) void fbw_save_push_i32(int32_t v) {
+    if (g_save_len >= 0 && g_save_len < FBW_SAVE_CAP) {
+        g_save_buf[g_save_len++] = v;
+    }
+}
+
+static int32_t fbw_save_commit_to_dir(const char *dir) {
+    if (!dir || !dir[0] || g_save_len <= 0 || g_save_len > FBW_SAVE_CAP) return 0;
+    char tmp_path[600];
+    char bin_path[600];
+    snprintf(tmp_path, sizeof(tmp_path), "%s/fbw_save.tmp", dir);
+    snprintf(bin_path, sizeof(bin_path), "%s/fbw_save.bin", dir);
+
+    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return 0;
+
+    uint32_t hdr[4];
+    hdr[0] = FBW_SAVE_MAGIC;
+    hdr[1] = (uint32_t)FBW_SAVE_VER;
+    hdr[2] = (uint32_t)g_save_len;
+    hdr[3] = fbw_save_crc(g_save_buf, g_save_len);
+
+    int ok = (fbw_write_all(fd, hdr, sizeof(hdr)) == 0) &&
+             (fbw_write_all(fd, g_save_buf, (size_t)g_save_len * sizeof(int32_t)) == 0);
+    close(fd);
+    if (!ok) {
+        unlink(tmp_path);
+        return 0;
+    }
+    if (rename(tmp_path, bin_path) != 0) {
+        unlink(tmp_path);
+        return 0;
+    }
+    return 1;
+}
+
+__attribute__((visibility("default"))) int32_t fbw_save_commit(void) {
+    const char *dir = fbw_save_dir();
+    if (fbw_save_commit_to_dir(dir)) return 1;
+    if (g_data_path && g_data_path[0] && strcmp(dir, g_data_path) != 0) {
+        return fbw_save_commit_to_dir(g_data_path);
+    }
+    return 0;
+}
+
+static int32_t fbw_load_from_dir(const char *dir) {
+    if (!dir || !dir[0]) return 0;
+    char bin_path[600];
+    snprintf(bin_path, sizeof(bin_path), "%s/fbw_save.bin", dir);
+    int fd = open(bin_path, O_RDONLY);
+    if (fd < 0) return 0;
+
+    uint32_t hdr[4];
+    if (fbw_read_all(fd, hdr, sizeof(hdr)) != 0) { close(fd); return 0; }
+    if (hdr[0] != FBW_SAVE_MAGIC || hdr[1] != (uint32_t)FBW_SAVE_VER ||
+        hdr[2] == 0 || hdr[2] > (uint32_t)FBW_SAVE_CAP) {
+        close(fd);
+        return 0;
+    }
+    int32_t cnt = (int32_t)hdr[2];
+    if (fbw_read_all(fd, g_save_buf, (size_t)cnt * sizeof(int32_t)) != 0) {
+        close(fd);
+        return 0;
+    }
+    close(fd);
+    if (fbw_save_crc(g_save_buf, cnt) != hdr[3]) {
+        return 0;
+    }
+    g_save_len = cnt;
+    g_save_pos = 0;
+    return cnt;
+}
+
+__attribute__((visibility("default"))) int32_t fbw_load_begin(void) {
+    g_save_len = 0;
+    g_save_pos = 0;
+    const char *dir = fbw_save_dir();
+    int32_t cnt = fbw_load_from_dir(dir);
+    if (cnt > 0) return cnt;
+    if (g_data_path && g_data_path[0] && strcmp(dir, g_data_path) != 0) {
+        return fbw_load_from_dir(g_data_path);
+    }
+    return 0;
+}
+
+__attribute__((visibility("default"))) int32_t fbw_load_pop_i32(void) {
+    if (g_save_pos >= 0 && g_save_pos < g_save_len) {
+        return g_save_buf[g_save_pos++];
+    }
+    return 0;
+}
+
+__attribute__((visibility("default"))) void fbw_load_end(void) {
+    g_save_len = 0;
+    g_save_pos = 0;
+}
+
+__attribute__((visibility("default"))) int32_t fbw_save_delete(void) {
+    char p[600];
+    const char *dir = fbw_save_dir();
+    snprintf(p, sizeof(p), "%s/fbw_save.bin", dir); unlink(p);
+    snprintf(p, sizeof(p), "%s/fbw_save.tmp", dir); unlink(p);
+    if (g_data_path && g_data_path[0] && strcmp(dir, g_data_path) != 0) {
+        snprintf(p, sizeof(p), "%s/fbw_save.bin", g_data_path); unlink(p);
+        snprintf(p, sizeof(p), "%s/fbw_save.tmp", g_data_path); unlink(p);
+    }
+    g_save_len = 0;
+    g_save_pos = 0;
+    return 1;
+}
+
+static int32_t fbw_peek_exists_in_dir(const char *dir) {
+    if (!dir || !dir[0]) return 0;
+    char bin_path[600];
+    snprintf(bin_path, sizeof(bin_path), "%s/fbw_save.bin", dir);
+    int fd = open(bin_path, O_RDONLY);
+    if (fd < 0) return 0;
+    uint32_t hdr[4];
+    int ok = (fbw_read_all(fd, hdr, sizeof(hdr)) == 0) &&
+             hdr[0] == FBW_SAVE_MAGIC &&
+             hdr[1] == (uint32_t)FBW_SAVE_VER &&
+             hdr[2] > 0 && hdr[2] <= (uint32_t)FBW_SAVE_CAP;
+    close(fd);
+    return ok ? 1 : 0;
+}
+
+__attribute__((visibility("default"))) int32_t fbw_save_exists(void) {
+    const char *dir = fbw_save_dir();
+    if (fbw_peek_exists_in_dir(dir)) return 1;
+    if (g_data_path && g_data_path[0] && strcmp(dir, g_data_path) != 0) {
+        return fbw_peek_exists_in_dir(g_data_path);
+    }
+    return 0;
 }
 
 // i32-only text crossing. No pointers, no slices cross the FFI boundary.
@@ -367,8 +559,14 @@ __attribute__((visibility("default"))) int goose_text_width(int scale) {
     return text_width_bmp(g_text_buf, scale);
 }
 
-int HandleDestroy() { return 0; }
-void HandleSuspend() { suspended = 1; }
+int HandleDestroy() {
+    if (g_goose_started) goose_handle_suspend();
+    return 0;
+}
+void HandleSuspend() {
+    suspended = 1;
+    if (g_goose_started) goose_handle_suspend();
+}
 void HandleResume() {
     if (gapp && gapp->window != NULL) {
         suspended = 0;
@@ -412,6 +610,12 @@ int main(int argc, char** argv)
             g_data_path = gapp->activity->internalDataPath;
         }
         
+        if (gapp->activity->internalDataPath && gapp->activity->internalDataPath[0]) {
+            snprintf(g_save_path, sizeof(g_save_path), "%s", gapp->activity->internalDataPath);
+        } else if (g_data_path && g_data_path[0]) {
+            snprintf(g_save_path, sizeof(g_save_path), "%s", g_data_path);
+        }
+
         // Read existing crash log
         char logpath[256];
         snprintf(logpath, sizeof(logpath), "%s/crash.log", g_data_path);
@@ -431,6 +635,7 @@ int main(int argc, char** argv)
 
     // 3. Initialize Goose runtime
     goose_init(argc, argv);
+    g_goose_started = 1;
 
     // 4. Setup graphics
     CNFGBGColor = 0x101010FF;
@@ -481,6 +686,10 @@ int main(int argc, char** argv)
         }
     }
 
+    if (g_goose_started) {
+        goose_handle_suspend();
+        g_goose_started = 0;
+    }
     crash_clear(); // Clear log on clean exit
     goose_exit();
     return(0);

@@ -1,0 +1,1641 @@
+diff --git a/main.c b/main.c
+index 658fc15..0ca4fd0 100644
+--- a/main.c
++++ b/main.c
+@@ -29,6 +29,8 @@ extern struct android_app * gapp;
+ static char g_crash_text[4096];
+ static int  g_crash_len = 0;
+ static const char* g_data_path = "";
++static char g_save_path[512];
++static volatile int g_goose_started = 0;
+ 
+ // === Bridge functions for Goose FFI (must be visible for dynamic linking) ===
+ __attribute__((visibility("default"))) int get_CNFGPenX(void) { return CNFGPenX; }
+@@ -52,6 +54,196 @@ __attribute__((visibility("default"))) void goose_draw_rect(int x1, int y1, int
+     CNFGTackRectangle((float)x1, (float)y1, (float)x2, (float)y2);
+ }
+ 
++// === Integer-only Atomic Auto-Save Persistence (Zero-ABI-hazard FFI) ===
++#define FBW_SAVE_MAGIC 0x53574246u /* 'FBWS' */
++#define FBW_SAVE_VER   1
++#define FBW_SAVE_CAP   65536
++
++static int32_t g_save_buf[FBW_SAVE_CAP];
++static int32_t g_save_len = 0;
++static int32_t g_save_pos = 0;
++
++static uint32_t fbw_save_crc(const int32_t *data, int32_t count) {
++    uint32_t h = 2166136261u;
++    for (int32_t i = 0; i < count; i++) {
++        uint32_t v = (uint32_t)data[i];
++        h ^= (v & 0xFFu); h *= 16777619u;
++        h ^= ((v >> 8) & 0xFFu); h *= 16777619u;
++        h ^= ((v >> 16) & 0xFFu); h *= 16777619u;
++        h ^= ((v >> 24) & 0xFFu); h *= 16777619u;
++    }
++    return h;
++}
++
++static const char* fbw_save_dir(void) {
++    if (g_save_path[0]) return g_save_path;
++    if (g_data_path && g_data_path[0]) return g_data_path;
++    return ".";
++}
++
++static int fbw_write_all(int fd, const void *buf, size_t len) {
++    const uint8_t *p = (const uint8_t *)buf;
++    size_t off = 0;
++    while (off < len) {
++        ssize_t n = write(fd, p + off, len - off);
++        if (n <= 0) return -1;
++        off += (size_t)n;
++    }
++    return 0;
++}
++
++static int fbw_read_all(int fd, void *buf, size_t len) {
++    uint8_t *p = (uint8_t *)buf;
++    size_t off = 0;
++    while (off < len) {
++        ssize_t n = read(fd, p + off, len - off);
++        if (n <= 0) return -1;
++        off += (size_t)n;
++    }
++    return 0;
++}
++
++__attribute__((visibility("default"))) int32_t fbw_save_begin(void) {
++    g_save_len = 0;
++    g_save_pos = 0;
++    return 1;
++}
++
++__attribute__((visibility("default"))) void fbw_save_push_i32(int32_t v) {
++    if (g_save_len >= 0 && g_save_len < FBW_SAVE_CAP) {
++        g_save_buf[g_save_len++] = v;
++    }
++}
++
++static int32_t fbw_save_commit_to_dir(const char *dir) {
++    if (!dir || !dir[0] || g_save_len <= 0 || g_save_len > FBW_SAVE_CAP) return 0;
++    char tmp_path[600];
++    char bin_path[600];
++    snprintf(tmp_path, sizeof(tmp_path), "%s/fbw_save.tmp", dir);
++    snprintf(bin_path, sizeof(bin_path), "%s/fbw_save.bin", dir);
++
++    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
++    if (fd < 0) return 0;
++
++    uint32_t hdr[4];
++    hdr[0] = FBW_SAVE_MAGIC;
++    hdr[1] = (uint32_t)FBW_SAVE_VER;
++    hdr[2] = (uint32_t)g_save_len;
++    hdr[3] = fbw_save_crc(g_save_buf, g_save_len);
++
++    int ok = (fbw_write_all(fd, hdr, sizeof(hdr)) == 0) &&
++             (fbw_write_all(fd, g_save_buf, (size_t)g_save_len * sizeof(int32_t)) == 0);
++    close(fd);
++    if (!ok) {
++        unlink(tmp_path);
++        return 0;
++    }
++    if (rename(tmp_path, bin_path) != 0) {
++        unlink(tmp_path);
++        return 0;
++    }
++    return 1;
++}
++
++__attribute__((visibility("default"))) int32_t fbw_save_commit(void) {
++    const char *dir = fbw_save_dir();
++    if (fbw_save_commit_to_dir(dir)) return 1;
++    if (g_data_path && g_data_path[0] && strcmp(dir, g_data_path) != 0) {
++        return fbw_save_commit_to_dir(g_data_path);
++    }
++    return 0;
++}
++
++static int32_t fbw_load_from_dir(const char *dir) {
++    if (!dir || !dir[0]) return 0;
++    char bin_path[600];
++    snprintf(bin_path, sizeof(bin_path), "%s/fbw_save.bin", dir);
++    int fd = open(bin_path, O_RDONLY);
++    if (fd < 0) return 0;
++
++    uint32_t hdr[4];
++    if (fbw_read_all(fd, hdr, sizeof(hdr)) != 0) { close(fd); return 0; }
++    if (hdr[0] != FBW_SAVE_MAGIC || hdr[1] != (uint32_t)FBW_SAVE_VER ||
++        hdr[2] == 0 || hdr[2] > (uint32_t)FBW_SAVE_CAP) {
++        close(fd);
++        return 0;
++    }
++    int32_t cnt = (int32_t)hdr[2];
++    if (fbw_read_all(fd, g_save_buf, (size_t)cnt * sizeof(int32_t)) != 0) {
++        close(fd);
++        return 0;
++    }
++    close(fd);
++    if (fbw_save_crc(g_save_buf, cnt) != hdr[3]) {
++        return 0;
++    }
++    g_save_len = cnt;
++    g_save_pos = 0;
++    return cnt;
++}
++
++__attribute__((visibility("default"))) int32_t fbw_load_begin(void) {
++    g_save_len = 0;
++    g_save_pos = 0;
++    const char *dir = fbw_save_dir();
++    int32_t cnt = fbw_load_from_dir(dir);
++    if (cnt > 0) return cnt;
++    if (g_data_path && g_data_path[0] && strcmp(dir, g_data_path) != 0) {
++        return fbw_load_from_dir(g_data_path);
++    }
++    return 0;
++}
++
++__attribute__((visibility("default"))) int32_t fbw_load_pop_i32(void) {
++    if (g_save_pos >= 0 && g_save_pos < g_save_len) {
++        return g_save_buf[g_save_pos++];
++    }
++    return 0;
++}
++
++__attribute__((visibility("default"))) void fbw_load_end(void) {
++    g_save_len = 0;
++    g_save_pos = 0;
++}
++
++__attribute__((visibility("default"))) int32_t fbw_save_delete(void) {
++    char p[600];
++    const char *dir = fbw_save_dir();
++    snprintf(p, sizeof(p), "%s/fbw_save.bin", dir); unlink(p);
++    snprintf(p, sizeof(p), "%s/fbw_save.tmp", dir); unlink(p);
++    if (g_data_path && g_data_path[0] && strcmp(dir, g_data_path) != 0) {
++        snprintf(p, sizeof(p), "%s/fbw_save.bin", g_data_path); unlink(p);
++        snprintf(p, sizeof(p), "%s/fbw_save.tmp", g_data_path); unlink(p);
++    }
++    g_save_len = 0;
++    g_save_pos = 0;
++    return 1;
++}
++
++static int32_t fbw_peek_exists_in_dir(const char *dir) {
++    if (!dir || !dir[0]) return 0;
++    char bin_path[600];
++    snprintf(bin_path, sizeof(bin_path), "%s/fbw_save.bin", dir);
++    int fd = open(bin_path, O_RDONLY);
++    if (fd < 0) return 0;
++    uint32_t hdr[4];
++    int ok = (fbw_read_all(fd, hdr, sizeof(hdr)) == 0) &&
++             hdr[0] == FBW_SAVE_MAGIC &&
++             hdr[1] == (uint32_t)FBW_SAVE_VER &&
++             hdr[2] > 0 && hdr[2] <= (uint32_t)FBW_SAVE_CAP;
++    close(fd);
++    return ok ? 1 : 0;
++}
++
++__attribute__((visibility("default"))) int32_t fbw_save_exists(void) {
++    const char *dir = fbw_save_dir();
++    if (fbw_peek_exists_in_dir(dir)) return 1;
++    if (g_data_path && g_data_path[0] && strcmp(dir, g_data_path) != 0) {
++        return fbw_peek_exists_in_dir(g_data_path);
++    }
++    return 0;
++}
++
+ // i32-only text crossing. No pointers, no slices cross the FFI boundary.
+ // Goose calls: goose_text_clear(); goose_text_append(c); ... ; goose_text_draw(x, y, scale);
+ // Font: font8x8 (public domain IBM VGA bitmap font), baked at compile time.
+@@ -367,8 +559,14 @@ __attribute__((visibility("default"))) int goose_text_width(int scale) {
+     return text_width_bmp(g_text_buf, scale);
+ }
+ 
+-int HandleDestroy() { return 0; }
+-void HandleSuspend() { suspended = 1; }
++int HandleDestroy() {
++    if (g_goose_started) goose_handle_suspend();
++    return 0;
++}
++void HandleSuspend() {
++    suspended = 1;
++    if (g_goose_started) goose_handle_suspend();
++}
+ void HandleResume() {
+     if (gapp && gapp->window != NULL) {
+         suspended = 0;
+@@ -412,6 +610,12 @@ int main(int argc, char** argv)
+             g_data_path = gapp->activity->internalDataPath;
+         }
+         
++        if (gapp->activity->internalDataPath && gapp->activity->internalDataPath[0]) {
++            snprintf(g_save_path, sizeof(g_save_path), "%s", gapp->activity->internalDataPath);
++        } else if (g_data_path && g_data_path[0]) {
++            snprintf(g_save_path, sizeof(g_save_path), "%s", g_data_path);
++        }
++
+         // Read existing crash log
+         char logpath[256];
+         snprintf(logpath, sizeof(logpath), "%s/crash.log", g_data_path);
+@@ -431,6 +635,7 @@ int main(int argc, char** argv)
+ 
+     // 3. Initialize Goose runtime
+     goose_init(argc, argv);
++    g_goose_started = 1;
+ 
+     // 4. Setup graphics
+     CNFGBGColor = 0x101010FF;
+@@ -481,6 +686,10 @@ int main(int argc, char** argv)
+         }
+     }
+ 
++    if (g_goose_started) {
++        goose_handle_suspend();
++        g_goose_started = 0;
++    }
+     crash_clear(); // Clear log on clean exit
+     goose_exit();
+     return(0);
+diff --git a/src/calc_main.goose b/src/calc_main.goose
+index 1be4d33..7615329 100644
+--- a/src/calc_main.goose
++++ b/src/calc_main.goose
+@@ -125,6 +125,7 @@ export fn goose_handle_pointer(x: i32, y: i32, pid: i32, ev_type: i32) -> i32 {
+     if g_game_mode == 2 {
+         fbw_mobile_pointer(x, y, pid, ev_type);
+         if fbw_should_exit_to_calc() != 0 {
++            fbw_mobile_save_now();
+             fbw_clear_exit_flag();
+             g_game_mode = 0;
+             fbw_set_orientation(0);
+@@ -143,6 +144,7 @@ export fn goose_handle_touch(x: i32, y: i32, bDown: i32) -> i32 {
+     if g_game_mode == 2 {
+         fbw_mobile_pointer(x, y, 0, if bDown != 0 { 1 } else { 0 });
+         if fbw_should_exit_to_calc() != 0 {
++            fbw_mobile_save_now();
+             fbw_clear_exit_flag();
+             g_game_mode = 0;
+             fbw_set_orientation(0);
+@@ -334,6 +336,7 @@ export fn goose_draw() {
+     if g_game_mode == 2 {
+         fbw_mobile_tick_and_draw(w, h);
+         if fbw_should_exit_to_calc() != 0 {
++            fbw_mobile_save_now();
+             fbw_clear_exit_flag();
+             g_game_mode = 0;
+             fbw_set_orientation(0);
+@@ -371,8 +374,10 @@ export fn goose_handle_back() -> i32 {
+     if g_game_mode == 2 {
+         let st = core();
+         if st.screen != SCREEN_PLAY {
++            fbw_mobile_save_now();
+             st.screen = SCREEN_PLAY;
+         } else {
++            fbw_mobile_save_now();
+             st.screen = SCREEN_PAUSE;
+         }
+         return 1;
+@@ -393,3 +398,9 @@ export fn goose_handle_back() -> i32 {
+ export fn goose_force_resize() {
+     g_ui.layout = empty_layout();
+ }
++
++export fn goose_handle_suspend() {
++    if g_game_mode == 2 {
++        fbw_mobile_save_now();
++    }
++}
+diff --git a/src/fbw_bridge.goose b/src/fbw_bridge.goose
+index ca771f2..68c78a9 100644
+--- a/src/fbw_bridge.goose
++++ b/src/fbw_bridge.goose
+@@ -8,6 +8,15 @@ extern fn fbw_set_orientation(landscape: i32);
+ extern fn fbw_now_ms() -> i32;
+ extern fn fbw_sound_fx(kind: i32);
+ 
++extern fn fbw_save_begin() -> i32;
++extern fn fbw_save_push_i32(v: i32);
++extern fn fbw_save_commit() -> i32;
++extern fn fbw_load_begin() -> i32;
++extern fn fbw_load_pop_i32() -> i32;
++extern fn fbw_load_end();
++extern fn fbw_save_delete() -> i32;
++extern fn fbw_save_exists() -> i32;
++
+ extern fn fbw_gl_set_viewport(w: i32, h: i32, depth: i32, biome: i32, flash_rgb: i32, flash_ms: i32);
+ extern fn fbw_gl_set_camera(px_mm: i32, py_mm: i32, pz_mm: i32,
+                               yaw_mrad: i32, pitch_mrad: i32, roll_mrad: i32, anim_ms: i32);
+diff --git a/src/fbw_core.goose b/src/fbw_core.goose
+index 600bee9..240649c 100644
+--- a/src/fbw_core.goose
++++ b/src/fbw_core.goose
+@@ -35,6 +35,7 @@ const SCREEN_INFO_F5: i32 = 10;
+ const SCREEN_TOME: i32 = 11;
+ const SCREEN_VICTORY: i32 = 12;
+ const SCREEN_UPGRADE: i32 = 13;
++const SCREEN_EDIT_UI: i32 = 14;
+ 
+ // Biomes (Authentic Xar Progression)
+ const BIOME_SPACE: i32 = 0;         // Outer Space Level 0 (depth < 0)
+@@ -404,6 +405,7 @@ root struct fbw_state {
+     anim_ms: i64,
+     level: i32,          // player level (max 500); grants upgrades on level-up
+     xp: i32,             // experience toward next level
++    autosave_dirty: i32, // set when progress/world state changes cleanly
+ }
+ 
+ var st: fbw_state;
+@@ -677,6 +679,7 @@ fn award_trophy(bit: i32, msg: const u8[:]) {
+     st.trophy_mask = st.trophy_mask | bit;
+     st.trophies = st.trophies + 1;
+     st.score_xp = st.score_xp + 250;
++    st.autosave_dirty = 1;
+     queue_sfx(SFX_PICKUP);
+     set_status_msg(msg, 3200);
+ }
+@@ -697,6 +700,7 @@ fn is_entity_cleared(seed: u64, slot_id: i32) -> i32 {
+ fn mark_entity_cleared(seed: u64, slot_id: i32) {
+     if slot_id < 0 || slot_id >= 32 { return; }
+     let bit: u32 = (1 as! u32) << (slot_id as! u32);
++    st.autosave_dirty = 1;
+     var i: i32 = 0;
+     while i < MAX_CLEARED_CHUNKS {
+         if st.cleared_seeds[i] == seed {
+@@ -799,6 +803,7 @@ fn compute_air_depth(d_in: i32) -> i32 {
+ fn record_block_delta(bx: i32, by: i32, bz: i32, b: u8) {
+     invalidate_inward_cache();
+     st.chunk_rev = st.chunk_rev + 1;
++    st.autosave_dirty = 1;
+     let seed = cur_seed();
+     var i: i32 = 0;
+     while i < MAX_DELTAS {
+@@ -1152,6 +1157,7 @@ fn award_xp(amount: i32) {
+         refresh_derived();
+         st.hp = st.max_hp;
+         st.shields = st.max_shields;
++        st.autosave_dirty = 1;
+         queue_sfx(SFX_PICKUP);
+         set_status_msg("LEVEL UP! +1 Dmg (all weapons), +20 MaxHP, +1 Regen", 2400);
+     }
+@@ -3083,6 +3089,7 @@ fn shrink_into_ex(bx: i32, by: i32, bz: i32, target_blk: u8, forced_biome: i32,
+     st.ring_cd_ms = 260;
+     st.flash_ms = 200;
+     st.flash_rgb = pack_rgb(40, 235, 130);
++    st.autosave_dirty = 1;
+     queue_sfx(SFX_WARP);
+     if target_blk == BLK_AIR {
+         set_status_msg(if steps >= 2 { "Shrank 256x in-place (same world)!" } else { "Shrank 16x in-place (same world)!" }, 1600);
+@@ -3209,6 +3216,7 @@ fn grow_out_axis(exit_x: f64, exit_y: f64, exit_z: f64) {
+     st.ring_cd_ms = 260;
+     st.flash_ms = 200;
+     st.flash_rgb = pack_rgb(245, 70, 70);
++    st.autosave_dirty = 1;
+     queue_sfx(SFX_WARP);
+     set_status_msg("Grew 16x outward in-place!", 1600);
+ }
+@@ -3390,6 +3398,7 @@ fn init_new_game() {
+     st.dps_val = 0;
+     st.dps_accum = 0;
+     st.dps_timer_ms = 0;
++    st.autosave_dirty = 0;
+ 
+     load_current_chunk();
+     if st.genesis_mode != 0 {
+@@ -3432,6 +3441,7 @@ fn respawn_at_tutorial_preserving_progress() {
+     st.ring_cd_ms = 400;
+     st.flash_ms = 320;
+     st.flash_rgb = pack_rgb(220, 40, 60);
++    st.autosave_dirty = 1;
+     queue_sfx(SFX_HURT);
+     set_status_msg("Hull destroyed! Respawned: -30 Gold, armor & ammo lost (plasma refilled).", 3600);
+ }
+@@ -4054,6 +4064,7 @@ fn damage_entity(idx: i32, dmg: i32, stun_ms: i32) {
+         if k == ENT_SINGULARITY {
+             st.singularity_defeated = 1;
+             st.quasar_drive = 1;
++            st.autosave_dirty = 1;
+             add_gold(500);
+             let _ = spawn_entity(ENT_ARMOR, ex + 0.4, ey, ez, 3, -1, 0);   // gold armor (2B)
+             let _ = spawn_entity(ENT_HEALTH, ex - 0.4, ey, ez, 4, -1, 0);  // health to 2B
+@@ -5001,6 +5012,7 @@ fn drop_marker(is_long: i32) {
+     st.markers[slot].neg_off = neg_off;
+     st.markers[slot].neg_cnt = neg_cnt;
+     st.active_marker = slot;
++    st.autosave_dirty = 1;
+     queue_sfx(SFX_PICKUP);
+     if is_long != 0 {
+         set_status_msg("Long Tracking Marker placed! View & warp via [INFO/F4].", 1800);
+@@ -5029,6 +5041,7 @@ fn warp_to_marker(slot: i32) -> i32 {
+     st.vx = 0.0; st.vy = 0.0; st.vz = 0.0;
+     st.flash_ms = 240;
+     st.flash_rgb = pack_rgb(74, 222, 128);
++    st.autosave_dirty = 1;
+     queue_sfx(SFX_WARP);
+     set_status_msg("Warped to Marker!", 1600);
+     return 1;
+@@ -5288,7 +5301,9 @@ fn handle_buy_action(choice: i32) {
+         set_status_msg("200% Armor!", 1400);
+     } else {
+         set_status_msg("Not enough gold!", 1000);
++        return;
+     }
++    st.autosave_dirty = 1;
+ }
+ 
+ fn handle_sell_action(choice: i32) {
+@@ -5326,7 +5341,9 @@ fn handle_sell_action(choice: i32) {
+         set_status_msg("Sold 1 Nuke for +80 Gold!", 1400);
+     } else {
+         set_status_msg("Not enough surplus to sell!", 1000);
++        return;
+     }
++    st.autosave_dirty = 1;
+ }
+ 
+ fn handle_black_market_action(choice: i32) {
+@@ -5348,7 +5365,9 @@ fn handle_black_market_action(choice: i32) {
+         set_status_msg("Black Market: 2 Nukes!", 1400);
+     } else {
+         set_status_msg("Not enough gold!", 1000);
++        return;
+     }
++    st.autosave_dirty = 1;
+ }
+ 
+ // Upgrade Station (manual 8.6): the main gold sink. Buying a weapon's damage
+@@ -5417,7 +5436,9 @@ fn handle_upgrade_action(choice: i32) {
+         set_status_msg("Health regen upgraded! (Shield & HP regen faster)", 1400);
+     } else {
+         set_status_msg("Not enough gold!", 1000);
++        return;
+     }
++    st.autosave_dirty = 1;
+ }
+ 
+ fn step_simulation(dt_ms: i32) {
+diff --git a/src/fbw_mobile.goose b/src/fbw_mobile.goose
+index 325b4c4..89b221f 100644
+--- a/src/fbw_mobile.goose
++++ b/src/fbw_mobile.goose
+@@ -31,6 +31,23 @@ const ACT_ROLL_L: i32 = 11;
+ const ACT_ROLL_R: i32 = 12;
+ const ACT_TK: i32 = 13;
+ 
++// Editable UI Control IDs
++const NUM_CTRLS: i32 = 12;
++const CTRL_STICK: i32 = 0;
++const CTRL_FIRE: i32 = 1;
++const CTRL_ALT: i32 = 2;
++const CTRL_USE: i32 = 3;
++const CTRL_SHRK: i32 = 4;
++const CTRL_GROW: i32 = 5;
++const CTRL_TK: i32 = 6;
++const CTRL_UP: i32 = 7;
++const CTRL_DN: i32 = 8;
++const CTRL_BRK: i32 = 9;
++const CTRL_RL: i32 = 10;
++const CTRL_RR: i32 = 11;
++
++const FBW_PAYLOAD_MAGIC: i32 = 0x46425732; // 'FBW2'
++
+ struct TouchPointer {
+     active: i32,
+     role: i32,
+@@ -122,11 +139,47 @@ struct MobileController {
+     stick_dy: f64,
+     info_marker_page: i32,
+     fps_ms: i32,
++    // Auto-save & Control UI Editor
++    autosave_ms: i32,
++    confirm_reset: i32,
++    ctrl_scale: i32[12],
++    ctrl_ox: i32[12],
++    ctrl_oy: i32[12],
++    edit_sel: i32,
++    edit_drag_pid: i32,
++    edit_drag_dx: i32,
++    edit_drag_dy: i32,
+ }
+ 
+ var g_mob: MobileController;
+ 
+-fn compute_mobile_layout(w: i32, h: i32) -> MobileLayout {
++fn reset_default_controls() {
++    var i: i32 = 0;
++    while i < NUM_CTRLS {
++        g_mob.ctrl_scale[i] = 100;
++        g_mob.ctrl_ox[i] = 0;
++        g_mob.ctrl_oy[i] = 0;
++        i = i + 1;
++    }
++}
++
++fn ctrl_name(id: i32) -> const u8[:] {
++    if id == CTRL_STICK { return "STICK"; }
++    if id == CTRL_FIRE { return "FIRE"; }
++    if id == CTRL_ALT { return "ALT"; }
++    if id == CTRL_USE { return "USE"; }
++    if id == CTRL_SHRK { return "SHRK"; }
++    if id == CTRL_GROW { return "GROW"; }
++    if id == CTRL_TK { return "TK"; }
++    if id == CTRL_UP { return "UP"; }
++    if id == CTRL_DN { return "DN"; }
++    if id == CTRL_BRK { return "BRK"; }
++    if id == CTRL_RL { return "ROL-"; }
++    if id == CTRL_RR { return "ROL+"; }
++    return "NONE";
++}
++
++fn compute_default_layout(w: i32, h: i32) -> MobileLayout {
+     var l = MobileLayout {
+         w: w, h: h,
+         stick_cx: 0, stick_cy: 0, stick_r: 0,
+@@ -224,22 +277,554 @@ fn compute_mobile_layout(w: i32, h: i32) -> MobileLayout {
+     return l;
+ }
+ 
++fn apply_ctrl_box_h(x1: i32&, y1: i32&, x2: i32&, y2: i32&, id: i32, w: i32, h: i32, top_h: i32, wep_y1: i32) {
++    let sc_raw = g_mob.ctrl_scale[id];
++    let sc = if sc_raw >= 50 && sc_raw <= 220 { sc_raw } else { 100 };
++    let ox = g_mob.ctrl_ox[id];
++    let oy = g_mob.ctrl_oy[id];
++    if sc == 100 && ox == 0 && oy == 0 { return; }
++    let bw0 = x2 - x1;
++    let bh0 = y2 - y1;
++    let max_bw = if w > 80 { w / 2 } else { bw0 };
++    let avail_h = if wep_y1 - top_h > 48 { wep_y1 - top_h - 8 } else { bh0 };
++    let nbw = clamp_i((bw0 * sc) / 100, 28, max_bw);
++    let nbh = clamp_i((bh0 * sc) / 100, 24, avail_h);
++    let hw = nbw / 2;
++    let hh = nbh / 2;
++    var cx = ((x1 + x2) / 2) + (ox * w) / 1000;
++    var cy = ((y1 + y2) / 2) + (oy * h) / 1000;
++    cx = clamp_i(cx, hw + 4, if w - hw - 4 >= hw + 4 { w - hw - 4 } else { hw + 4 });
++    let min_cy = top_h + hh + 4;
++    let max_cy = wep_y1 - hh - 4;
++    cy = clamp_i(cy, min_cy, if max_cy >= min_cy { max_cy } else { min_cy });
++    x1 = cx - hw;
++    y1 = cy - hh;
++    x2 = x1 + nbw;
++    y2 = y1 + nbh;
++}
++
++fn compute_mobile_layout(w: i32, h: i32) -> MobileLayout {
++    var l = compute_default_layout(w, h);
++    // Apply custom UI Editor scale & offsets (100% / 0 offset == default pixel-for-pixel)
++    let st_sc_raw = g_mob.ctrl_scale[CTRL_STICK];
++    let st_sc = if st_sc_raw >= 50 && st_sc_raw <= 220 { st_sc_raw } else { 100 };
++    if st_sc != 100 || g_mob.ctrl_ox[CTRL_STICK] != 0 || g_mob.ctrl_oy[CTRL_STICK] != 0 {
++        let min_dim = if w < h { w } else { h };
++        let max_sr = if min_dim > 120 { min_dim / 3 } else { l.stick_r };
++        let nr = clamp_i((l.stick_r * st_sc) / 100, 36, max_sr);
++        var scx = l.stick_cx + (g_mob.ctrl_ox[CTRL_STICK] * w) / 1000;
++        var scy = l.stick_cy + (g_mob.ctrl_oy[CTRL_STICK] * h) / 1000;
++        scx = clamp_i(scx, nr + 4, if w - nr - 4 >= nr + 4 { w - nr - 4 } else { nr + 4 });
++        let min_sy = l.top_h + nr + 4;
++        let max_sy = l.wep_y1 - nr - 4;
++        scy = clamp_i(scy, min_sy, if max_sy >= min_sy { max_sy } else { min_sy });
++        l.stick_r = nr;
++        l.stick_cx = scx;
++        l.stick_cy = scy;
++    }
++
++    apply_ctrl_box_h(l.fire_x1, l.fire_y1, l.fire_x2, l.fire_y2, CTRL_FIRE, w, h, l.top_h, l.wep_y1);
++    apply_ctrl_box_h(l.alt_x1,  l.alt_y1,  l.alt_x2,  l.alt_y2,  CTRL_ALT,  w, h, l.top_h, l.wep_y1);
++    apply_ctrl_box_h(l.use_x1,  l.use_y1,  l.use_x2,  l.use_y2,  CTRL_USE,  w, h, l.top_h, l.wep_y1);
++    apply_ctrl_box_h(l.shk_x1,  l.shk_y1,  l.shk_x2,  l.shk_y2,  CTRL_SHRK, w, h, l.top_h, l.wep_y1);
++    apply_ctrl_box_h(l.grw_x1,  l.grw_y1,  l.grw_x2,  l.grw_y2,  CTRL_GROW, w, h, l.top_h, l.wep_y1);
++    apply_ctrl_box_h(l.tk_x1,   l.tk_y1,   l.tk_x2,   l.tk_y2,   CTRL_TK,   w, h, l.top_h, l.wep_y1);
++    apply_ctrl_box_h(l.up_x1,   l.up_y1,   l.up_x2,   l.up_y2,   CTRL_UP,   w, h, l.top_h, l.wep_y1);
++    apply_ctrl_box_h(l.dn_x1,   l.dn_y1,   l.dn_x2,   l.dn_y2,   CTRL_DN,   w, h, l.top_h, l.wep_y1);
++    apply_ctrl_box_h(l.brk_x1,  l.brk_y1,  l.brk_x2,  l.brk_y2,  CTRL_BRK,  w, h, l.top_h, l.wep_y1);
++    apply_ctrl_box_h(l.rl_x1,   l.rl_y1,   l.rl_x2,   l.rl_y2,   CTRL_RL,   w, h, l.top_h, l.wep_y1);
++    apply_ctrl_box_h(l.rr_x1,   l.rr_y1,   l.rr_x2,   l.rr_y2,   CTRL_RR,   w, h, l.top_h, l.wep_y1);
++    return l;
++}
++
+ fn in_box(x: i32, y: i32, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+     return x >= x1 && x <= x2 && y >= y1 && y <= y2;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Atomic Auto-Save, Load & Reset Persistence (Game Progress + Control Layout)
++// ---------------------------------------------------------------------------
++
++fn save_push_u64(v: u64) {
++    fbw_save_push_i32((v & 0xFFFFFFFF) as! i32);
++    fbw_save_push_i32(((v >> 32) & 0xFFFFFFFF) as! i32);
++}
++
++fn load_pop_u64() -> u64 {
++    let lo = (fbw_load_pop_i32() as! u64) & 0xFFFFFFFF;
++    let hi = (fbw_load_pop_i32() as! u64) & 0xFFFFFFFF;
++    return lo | (hi << 32);
++}
++
++fn save_push_frame(f: ScaleFrame) {
++    fbw_save_push_i32(f.bx);
++    fbw_save_push_i32(f.by);
++    fbw_save_push_i32(f.bz);
++    fbw_save_push_i32(f.biome);
++    fbw_save_push_i32(f.parent_block as! i32);
++    save_push_u64(f.seed);
++}
++
++fn load_pop_frame() -> ScaleFrame {
++    let bx = clamp_i(fbw_load_pop_i32(), 0, 15);
++    let by = clamp_i(fbw_load_pop_i32(), 0, 15);
++    let bz = clamp_i(fbw_load_pop_i32(), 0, 15);
++    let bio = clamp_i(fbw_load_pop_i32(), 0, 9);
++    let pb = clamp_i(fbw_load_pop_i32(), 0, 63) as! u8;
++    let sd = load_pop_u64();
++    return ScaleFrame { bx: bx, by: by, bz: bz, biome: bio, parent_block: pb, seed: sd };
++}
++
++fn fbw_save_game() -> i32 {
++    if g_mob.initialized == 0 { return 0; }
++    let st = core();
++    if fbw_save_begin() == 0 { return 0; }
++
++    fbw_save_push_i32(FBW_PAYLOAD_MAGIC);
++
++    // 1. Settings
++    fbw_save_push_i32(st.genesis_mode);
++    fbw_save_push_i32(st.shrink_any);
++    fbw_save_push_i32(st.disable_lod);
++    fbw_save_push_i32(st.lod_dist_level);
++    fbw_save_push_i32(st.view_chunk_radius);
++    fbw_save_push_i32(st.show_minimap);
++    fbw_save_push_i32(st.true_up);
++    fbw_save_push_i32(st.rocket_mode);
++
++    // 2. UI Control Editor Layout
++    fbw_save_push_i32(NUM_CTRLS);
++    var ci: i32 = 0;
++    while ci < NUM_CTRLS {
++        fbw_save_push_i32(g_mob.ctrl_scale[ci]);
++        fbw_save_push_i32(g_mob.ctrl_ox[ci]);
++        fbw_save_push_i32(g_mob.ctrl_oy[ci]);
++        ci = ci + 1;
++    }
++
++    // 3. Depth & Player Kinematics
++    fbw_save_push_i32(st.depth);
++    fbw_save_push_i32(st.max_depth_reached);
++    fbw_save_push_i32(st.min_depth_reached);
++    fbw_save_push_i32((fclamp(st.px, -16.0, 32.0) * 100000.0) as! i32);
++    fbw_save_push_i32((fclamp(st.py, -16.0, 32.0) * 100000.0) as! i32);
++    fbw_save_push_i32((fclamp(st.pz, -16.0, 32.0) * 100000.0) as! i32);
++    fbw_save_push_i32((fclamp(st.vx, -500.0, 500.0) * 10000.0) as! i32);
++    fbw_save_push_i32((fclamp(st.vy, -500.0, 500.0) * 10000.0) as! i32);
++    fbw_save_push_i32((fclamp(st.vz, -500.0, 500.0) * 10000.0) as! i32);
++    fbw_save_push_i32((st.yaw * 100000.0) as! i32);
++    fbw_save_push_i32((st.pitch * 100000.0) as! i32);
++    fbw_save_push_i32((st.roll * 100000.0) as! i32);
++
++    // 4. Stats, Progression & Economy
++    fbw_save_push_i32(st.hp);
++    fbw_save_push_i32(st.max_hp);
++    fbw_save_push_i32(st.hp_regen);
++    fbw_save_push_i32(st.regen_accum_ms);
++    fbw_save_push_i32(st.shields);
++    fbw_save_push_i32(st.max_shields);
++    fbw_save_push_i32(st.shield_regen);
++    fbw_save_push_i32(st.shield_accum_ms);
++    fbw_save_push_i32(st.armor);
++    fbw_save_push_i32(st.max_armor);
++    fbw_save_push_i32(st.level);
++    fbw_save_push_i32(st.xp);
++    fbw_save_push_i32(st.gold);
++    fbw_save_push_i32(st.keys);
++    fbw_save_push_i32(st.kills);
++    fbw_save_push_i32(st.deaths);
++    fbw_save_push_i32(st.score_xp);
++    fbw_save_push_i32(st.trophies);
++    fbw_save_push_i32(st.trophy_mask);
++    fbw_save_push_i32(st.singularity_defeated);
++    fbw_save_push_i32(st.quasar_drive);
++    fbw_save_push_i32(st.k_rescued);
++    fbw_save_push_i32(st.telekinesis_ms);
++    fbw_save_push_i32(st.black_hole_drive_ms);
++    fbw_save_push_i32(st.quasar_drive_ms);
++    fbw_save_push_i32(st.tome_read_mask);
++    save_push_u64(st.play_ms as! u64);
++    save_push_u64(st.rng);
++
++    // 5. Weapons & Upgrades
++    fbw_save_push_i32(st.weapon);
++    fbw_save_push_i32(st.dmg_lvl);
++    fbw_save_push_i32(st.rof_lvl);
++    fbw_save_push_i32(st.spd_lvl);
++    fbw_save_push_i32(st.ammo_cap_lvl);
++    var wi: i32 = 0;
++    while wi < NUM_WEAPONS {
++        fbw_save_push_i32(st.wep_unlocked[wi]);
++        fbw_save_push_i32(st.ammo[wi]);
++        fbw_save_push_i32(st.max_ammo[wi]);
++        fbw_save_push_i32(st.wep_mode[wi]);
++        wi = wi + 1;
++    }
++
++    // 6. Fractal Scale Stacks
++    let pos_cnt = if st.depth >= 0 { clamp_i(st.depth + 1, 1, MAX_POS_DEPTH + 1) } else { 1 };
++    let neg_cnt = if st.depth < 0 { clamp_i(-st.depth, 0, -MAX_NEG_DEPTH) } else { 0 };
++    fbw_save_push_i32(pos_cnt);
++    var i: i32 = 0;
++    while i < pos_cnt {
++        save_push_frame(get_frame(i));
++        i = i + 1;
++    }
++    fbw_save_push_i32(neg_cnt);
++    i = 1;
++    while i <= neg_cnt {
++        save_push_frame(get_frame(-i));
++        i = i + 1;
++    }
++
++    // 7. Markers
++    let mflen = clamp_i(st.marker_frames_len, 0, 16384);
++    fbw_save_push_i32(st.active_marker);
++    fbw_save_push_i32(mflen);
++    i = 0;
++    while i < mflen {
++        save_push_frame(st.marker_frames[i]);
++        i = i + 1;
++    }
++    i = 0;
++    while i < MAX_MARKERS {
++        fbw_save_push_i32(st.markers[i].used);
++        fbw_save_push_i32(st.markers[i].is_long);
++        fbw_save_push_i32(st.markers[i].depth);
++        fbw_save_push_i32(st.markers[i].biome);
++        fbw_save_push_i32(st.markers[i].pos_off);
++        fbw_save_push_i32(st.markers[i].pos_cnt);
++        fbw_save_push_i32(st.markers[i].neg_off);
++        fbw_save_push_i32(st.markers[i].neg_cnt);
++        fbw_save_push_i32((fclamp(st.markers[i].px, -16.0, 32.0) * 100000.0) as! i32);
++        fbw_save_push_i32((fclamp(st.markers[i].py, -16.0, 32.0) * 100000.0) as! i32);
++        fbw_save_push_i32((fclamp(st.markers[i].pz, -16.0, 32.0) * 100000.0) as! i32);
++        i = i + 1;
++    }
++
++    // 8. Cleared Entity Slots
++    var c_cnt: i32 = 0;
++    i = 0;
++    while i < MAX_CLEARED_CHUNKS {
++        if st.cleared_seeds[i] != 0 || st.cleared_masks[i] != 0 { c_cnt = c_cnt + 1; }
++        i = i + 1;
++    }
++    fbw_save_push_i32(st.cleared_head);
++    fbw_save_push_i32(c_cnt);
++    i = 0;
++    while i < MAX_CLEARED_CHUNKS {
++        if st.cleared_seeds[i] != 0 || st.cleared_masks[i] != 0 {
++            save_push_u64(st.cleared_seeds[i]);
++            fbw_save_push_i32(st.cleared_masks[i] as! i32);
++        }
++        i = i + 1;
++    }
++
++    // 9. Block Deltas
++    var d_cnt: i32 = 0;
++    i = 0;
++    while i < MAX_DELTAS {
++        if st.deltas[i].used != 0 { d_cnt = d_cnt + 1; }
++        i = i + 1;
++    }
++    fbw_save_push_i32(st.delta_head);
++    fbw_save_push_i32(d_cnt);
++    i = 0;
++    while i < MAX_DELTAS {
++        if st.deltas[i].used != 0 {
++            save_push_u64(st.deltas[i].seed);
++            let packed = (st.deltas[i].bx as! i32) |
++                         ((st.deltas[i].by as! i32) << 8) |
++                         ((st.deltas[i].bz as! i32) << 16) |
++                         ((st.deltas[i].blk as! i32) << 24);
++            fbw_save_push_i32(packed);
++        }
++        i = i + 1;
++    }
++
++    let ok = fbw_save_commit();
++    if ok != 0 {
++        st.autosave_dirty = 0;
++        g_mob.autosave_ms = 0;
++    }
++    return ok;
++}
++
++fn fbw_load_game() -> i32 {
++    let cnt = fbw_load_begin();
++    if cnt < 80 {
++        if cnt > 0 { fbw_load_end(); }
++        return 0;
++    }
++    if fbw_load_pop_i32() != FBW_PAYLOAD_MAGIC {
++        fbw_load_end();
++        return 0;
++    }
++
++    let st = core();
++    init_new_game();
++    reset_default_controls();
++
++    // 1. Settings
++    st.genesis_mode = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++    st.shrink_any = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++    st.disable_lod = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++    st.lod_dist_level = clamp_i(fbw_load_pop_i32(), 1, 7);
++    st.view_chunk_radius = clamp_i(fbw_load_pop_i32(), 1, 3);
++    st.show_minimap = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++    st.true_up = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++    st.rocket_mode = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++
++    // 2. UI Control Editor Layout
++    let saved_ctrls = clamp_i(fbw_load_pop_i32(), 0, 64);
++    var ci: i32 = 0;
++    while ci < saved_ctrls {
++        let sc = fbw_load_pop_i32();
++        let ox = fbw_load_pop_i32();
++        let oy = fbw_load_pop_i32();
++        if ci < NUM_CTRLS {
++            g_mob.ctrl_scale[ci] = clamp_i(sc, 50, 220);
++            g_mob.ctrl_ox[ci] = clamp_i(ox, -850, 850);
++            g_mob.ctrl_oy[ci] = clamp_i(oy, -850, 850);
++        }
++        ci = ci + 1;
++    }
++
++    // 3. Depth & Kinematics
++    st.depth = clamp_i(fbw_load_pop_i32(), MAX_NEG_DEPTH, MAX_POS_DEPTH);
++    st.max_depth_reached = clamp_i(fbw_load_pop_i32(), 0, MAX_POS_DEPTH);
++    st.min_depth_reached = clamp_i(fbw_load_pop_i32(), MAX_NEG_DEPTH, 0);
++    st.px = fclamp((fbw_load_pop_i32() as f64) / 100000.0, 0.2, 15.8);
++    st.py = fclamp((fbw_load_pop_i32() as f64) / 100000.0, 0.2, 15.8);
++    st.pz = fclamp((fbw_load_pop_i32() as f64) / 100000.0, 0.2, 15.8);
++    st.vx = (fbw_load_pop_i32() as f64) / 10000.0;
++    st.vy = (fbw_load_pop_i32() as f64) / 10000.0;
++    st.vz = (fbw_load_pop_i32() as f64) / 10000.0;
++    st.yaw = wrap_angle((fbw_load_pop_i32() as f64) / 100000.0);
++    st.pitch = fclamp((fbw_load_pop_i32() as f64) / 100000.0, -1.35, 1.35);
++    st.roll = wrap_angle((fbw_load_pop_i32() as f64) / 100000.0);
++
++    // 4. Stats & Economy
++    st.hp = clamp_i(fbw_load_pop_i32(), 1, 1000000);
++    st.max_hp = clamp_i(fbw_load_pop_i32(), 20, 1000000);
++    st.hp_regen = clamp_i(fbw_load_pop_i32(), 0, 10000);
++    st.regen_accum_ms = clamp_i(fbw_load_pop_i32(), 0, 10000);
++    st.shields = clamp_i(fbw_load_pop_i32(), 0, 1000000);
++    st.max_shields = clamp_i(fbw_load_pop_i32(), 0, 1000000);
++    st.shield_regen = clamp_i(fbw_load_pop_i32(), 0, 10000);
++    st.shield_accum_ms = clamp_i(fbw_load_pop_i32(), 0, 10000);
++    st.armor = clamp_i(fbw_load_pop_i32(), 0, 10000000);
++    st.max_armor = clamp_i(fbw_load_pop_i32(), 0, 10000000);
++    st.level = clamp_i(fbw_load_pop_i32(), 1, 500);
++    st.xp = clamp_i(fbw_load_pop_i32(), 0, 10000000);
++    st.gold = clamp_i(fbw_load_pop_i32(), 0, MAX_GOLD);
++    st.keys = clamp_i(fbw_load_pop_i32(), 0, 999);
++    st.kills = clamp_i(fbw_load_pop_i32(), 0, 10000000);
++    st.deaths = clamp_i(fbw_load_pop_i32(), 0, 10000000);
++    st.score_xp = clamp_i(fbw_load_pop_i32(), 0, 100000000);
++    st.trophies = clamp_i(fbw_load_pop_i32(), 0, 32);
++    st.trophy_mask = fbw_load_pop_i32();
++    st.singularity_defeated = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++    st.quasar_drive = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++    st.k_rescued = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++    st.telekinesis_ms = clamp_i(fbw_load_pop_i32(), 0, 60000);
++    st.black_hole_drive_ms = clamp_i(fbw_load_pop_i32(), 0, 60000);
++    st.quasar_drive_ms = clamp_i(fbw_load_pop_i32(), 0, 60000);
++    st.tome_read_mask = fbw_load_pop_i32();
++    st.play_ms = load_pop_u64() as! i64;
++    let saved_rng = load_pop_u64();
++    if saved_rng != 0 { st.rng = saved_rng; }
++
++    // 5. Weapons & Upgrades
++    st.weapon = clamp_i(fbw_load_pop_i32(), 0, NUM_WEAPONS - 1);
++    st.dmg_lvl = clamp_i(fbw_load_pop_i32(), 1, 1000);
++    st.rof_lvl = clamp_i(fbw_load_pop_i32(), 1, 1000);
++    st.spd_lvl = clamp_i(fbw_load_pop_i32(), 1, 1000);
++    st.ammo_cap_lvl = clamp_i(fbw_load_pop_i32(), 1, 1000);
++    var wi: i32 = 0;
++    while wi < NUM_WEAPONS {
++        st.wep_unlocked[wi] = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++        let am = fbw_load_pop_i32();
++        let mam = fbw_load_pop_i32();
++        st.max_ammo[wi] = if mam > 0 { mam } else { 100 };
++        st.ammo[wi] = clamp_i(am, 0, st.max_ammo[wi]);
++        let wm = fbw_load_pop_i32();
++        let mmax = if st.wep_mode_max[wi] > 0 { st.wep_mode_max[wi] } else { 1 };
++        st.wep_mode[wi] = clamp_i(wm, 0, mmax - 1);
++        wi = wi + 1;
++    }
++    st.wep_unlocked[WEP_PLASMA] = 1;
++    refresh_derived();
++
++    // 6. Scale Stacks
++    let pos_cnt = fbw_load_pop_i32();
++    if pos_cnt < 1 || pos_cnt > MAX_POS_DEPTH + 1 {
++        fbw_load_end();
++        init_new_game();
++        return 0;
++    }
++    var i: i32 = 0;
++    while i < pos_cnt {
++        set_frame(i, load_pop_frame());
++        i = i + 1;
++    }
++    let neg_cnt = fbw_load_pop_i32();
++    if neg_cnt < 0 || neg_cnt > -MAX_NEG_DEPTH {
++        fbw_load_end();
++        init_new_game();
++        return 0;
++    }
++    i = 1;
++    while i <= neg_cnt {
++        set_frame(-i, load_pop_frame());
++        i = i + 1;
++    }
++
++    // 7. Markers
++    st.active_marker = clamp_i(fbw_load_pop_i32(), -1, MAX_MARKERS - 1);
++    let mflen = fbw_load_pop_i32();
++    if mflen < 0 || mflen > 16384 {
++        fbw_load_end();
++        init_new_game();
++        return 0;
++    }
++    st.marker_frames_len = 0;
++    i = 0;
++    while i < mflen {
++        push_marker_frame(load_pop_frame());
++        i = i + 1;
++    }
++    i = 0;
++    while i < MAX_MARKERS {
++        let used: i32 = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++        let is_long: i32 = if fbw_load_pop_i32() != 0 { 1 } else { 0 };
++        let mdepth = clamp_i(fbw_load_pop_i32(), MAX_NEG_DEPTH, MAX_POS_DEPTH);
++        let mbio = clamp_i(fbw_load_pop_i32(), 0, 9);
++        let po = fbw_load_pop_i32();
++        let pc = fbw_load_pop_i32();
++        let no = fbw_load_pop_i32();
++        let nc = fbw_load_pop_i32();
++        let mpx = fclamp((fbw_load_pop_i32() as f64) / 100000.0, 0.2, 15.8);
++        let mpy = fclamp((fbw_load_pop_i32() as f64) / 100000.0, 0.2, 15.8);
++        let mpz = fclamp((fbw_load_pop_i32() as f64) / 100000.0, 0.2, 15.8);
++        if used != 0 && po >= 0 && pc >= 0 && po + pc <= mflen &&
++           no >= 0 && nc >= 0 && no + nc <= mflen {
++            st.markers[i].used = 1;
++            st.markers[i].is_long = is_long;
++            st.markers[i].depth = mdepth;
++            st.markers[i].biome = mbio;
++            st.markers[i].pos_off = po;
++            st.markers[i].pos_cnt = pc;
++            st.markers[i].neg_off = no;
++            st.markers[i].neg_cnt = nc;
++            st.markers[i].px = mpx;
++            st.markers[i].py = mpy;
++            st.markers[i].pz = mpz;
++        } else {
++            st.markers[i].used = 0;
++        }
++        i = i + 1;
++    }
++
++    // 8. Cleared Entities
++    st.cleared_head = clamp_i(fbw_load_pop_i32(), 0, MAX_CLEARED_CHUNKS - 1);
++    let c_cnt = clamp_i(fbw_load_pop_i32(), 0, MAX_CLEARED_CHUNKS);
++    i = 0;
++    while i < c_cnt {
++        let cs = load_pop_u64();
++        let cm = fbw_load_pop_i32() as! u32;
++        if i < MAX_CLEARED_CHUNKS {
++            st.cleared_seeds[i] = cs;
++            st.cleared_masks[i] = cm;
++        }
++        i = i + 1;
++    }
++
++    // 9. Block Deltas
++    st.delta_head = clamp_i(fbw_load_pop_i32(), 0, MAX_DELTAS - 1);
++    let d_cnt = clamp_i(fbw_load_pop_i32(), 0, MAX_DELTAS);
++    i = 0;
++    while i < d_cnt {
++        let ds = load_pop_u64();
++        let pk = fbw_load_pop_i32();
++        if i < MAX_DELTAS {
++            st.deltas[i].used = 1;
++            st.deltas[i].seed = ds;
++            st.deltas[i].bx = clamp_i(pk & 0xFF, 0, 15) as! u8;
++            st.deltas[i].by = clamp_i((pk >> 8) & 0xFF, 0, 15) as! u8;
++            st.deltas[i].bz = clamp_i((pk >> 16) & 0xFF, 0, 15) as! u8;
++            st.deltas[i].blk = clamp_i((pk >> 24) & 0xFF, 0, 63) as! u8;
++        }
++        i = i + 1;
++    }
++
++    fbw_load_end();
++    load_current_chunk();
++    if point_collides(st.px, st.py, st.pz) != 0 {
++        st.px = 8.5; st.py = 3.2; st.pz = 6.5;
++    }
++    st.autosave_dirty = 0;
++    return 1;
++}
++
++fn fbw_mobile_save_now() {
++    if g_mob.initialized != 0 {
++        let _ = fbw_save_game();
++    }
++}
++
++fn fbw_reset_save() {
++    let st = core();
++    let _ = fbw_save_delete();
++    reset_default_controls();
++    st.genesis_mode = 0;
++    st.shrink_any = 0;
++    st.disable_lod = 0;
++    st.lod_dist_level = 4;
++    st.view_chunk_radius = 2;
++    st.show_minimap = 1;
++    st.true_up = 1;
++    init_new_game();
++    if g_mob.lay.w > 0 && g_mob.lay.h > 0 {
++        g_mob.lay = compute_mobile_layout(g_mob.lay.w, g_mob.lay.h);
++    }
++    g_mob.confirm_reset = 0;
++    g_mob.autosave_ms = 0;
++    g_mob.sync_force = 1;
++    g_mob.inw_force = 1;
++    let _ = fbw_save_game();
++    st.screen = SCREEN_PLAY;
++    set_status_msg("Save reset! Default controls & fresh Classic run.", 2400);
++}
++
+ fn fbw_mobile_enter() {
+     let st = core();
+     g_mob.want_exit_to_calc = 0;
+     if g_mob.initialized == 0 {
++        reset_default_controls();
+         st.rng = 0x4642575f4d4f4231 ^ (fbw_now_ms() as u64);
+         st.genesis_mode = 0;
++        st.shrink_any = 0;
++        st.disable_lod = 0;
+         st.true_up = 1;
+         st.show_minimap = 1;
+         st.lod_dist_level = 4;
+         st.view_chunk_radius = 2;
+-        init_new_game();
+-        g_mob.initialized = 1;
++        if fbw_load_game() != 0 {
++            g_mob.initialized = 1;
++            set_status_msg("Auto-save loaded!", 2200);
++        } else {
++            init_new_game();
++            g_mob.initialized = 1;
++            let _ = fbw_save_game();
++        }
++        g_mob.autosave_ms = 0;
++        g_mob.confirm_reset = 0;
++        g_mob.edit_sel = CTRL_FIRE;
++        g_mob.edit_drag_pid = -1;
++    }
++    if g_mob.lay.w > 0 && g_mob.lay.h > 0 {
++        g_mob.lay = compute_mobile_layout(g_mob.lay.w, g_mob.lay.h);
+     }
+     if st.lod_dist_level < 1 || st.lod_dist_level > 7 {
+         st.lod_dist_level = 4;
+@@ -250,6 +835,8 @@ fn fbw_mobile_enter() {
+         g_mob.sync_force = 1;
+     }
+     st.screen = SCREEN_PLAY;
++    g_mob.confirm_reset = 0;
++    g_mob.edit_drag_pid = -1;
+     g_mob.last_ms = fbw_now_ms();
+     g_mob.sync_force = 1;
+     g_mob.inw_force = 1;
+@@ -1160,8 +1747,16 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
+         step_simulation(dt_ms);
+         drain_pending_sfx();
+         let _ = resolve_pending_neighbors(8);  // stream far-ring chunks (8/frame)
++        g_mob.autosave_ms = g_mob.autosave_ms + dt_ms;
++        if st.autosave_dirty != 0 || g_mob.autosave_ms >= 15000 {
++            let _ = fbw_save_game();
++        }
+     } else {
+         st.anim_ms = st.anim_ms + dt_ms;
++        if st.msg_ms > 0 {
++            st.msg_ms = st.msg_ms - dt_ms;
++            if st.msg_ms < 0 { st.msg_ms = 0; }
++        }
+     }
+ 
+     if st.depth != prev_depth || st.chunk_rev != prev_rev {
+@@ -1191,12 +1786,16 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
+     );
+     fbw_gl_render_3d();
+ 
+-    // 2. 2D CNFG Overlay: HUD + Touch Controls + Interactive Modals
+-    draw_mobile_hud(w, h);
+-    if st.screen == SCREEN_PLAY {
+-        draw_mobile_controls();
++    // 2. 2D CNFG Overlay: HUD + Touch Controls + Interactive Modals / UI Editor
++    if st.screen == SCREEN_EDIT_UI {
++        draw_ui_editor_overlay(w, h);
+     } else {
+-        draw_mobile_modal(w, h);
++        draw_mobile_hud(w, h);
++        if st.screen == SCREEN_PLAY {
++            draw_mobile_controls();
++        } else {
++            draw_mobile_modal(w, h);
++        }
+     }
+ }
+ 
+@@ -1594,6 +2193,103 @@ fn draw_mobile_controls() {
+ // Touch-Interactive Modals (Buy / Sell / Black Market / Tome / Info / Pause / Victory)
+ // ---------------------------------------------------------------------------
+ 
++fn draw_edit_outline(x1: i32, y1: i32, x2: i32, y2: i32, selected: bool) {
++    let col: u32 = if selected { 0xFACC15FF } else { 0x38BDF8AA };
++    set_color(col);
++    draw_segment(x1, y1, x2, y1);
++    draw_segment(x2, y1, x2, y2);
++    draw_segment(x2, y2, x1, y2);
++    draw_segment(x1, y2, x1, y1);
++    if selected {
++        draw_segment(x1 - 1, y1 - 1, x2 + 1, y1 - 1);
++        draw_segment(x2 + 1, y1 - 1, x2 + 1, y2 + 1);
++        draw_segment(x2 + 1, y2 + 1, x1 - 1, y2 + 1);
++        draw_segment(x1 - 1, y2 + 1, x1 - 1, y1 - 1);
++        set_color(0xFFFFFFFF);
++        draw_rect(x1 - 4, y1 - 4, x1 + 4, y1 + 4);
++        draw_rect(x2 - 4, y1 - 4, x2 + 4, y1 + 4);
++        draw_rect(x1 - 4, y2 - 4, x1 + 4, y2 + 4);
++        draw_rect(x2 - 4, y2 - 4, x2 + 4, y2 + 4);
++    }
++}
++
++fn draw_ui_editor_overlay(w: i32, h: i32) {
++    let st = core();
++    let l = &g_mob.lay;
++
++    // Weapon strip footprint guide so user avoids placing controls over weapon bar
++    fbw_box(12, l.wep_y1, w - 12, l.wep_y2, 0x0A101C90, 0x47556980);
++    set_color(0x94A3B8CC);
++    fbw_text(22, l.wep_y1 + 14, "WEAPON BAR AREA", 2);
++
++    // Draw all 12 controls at their edited sizes & positions
++    draw_mobile_controls();
++
++    // Draw selection & handle outlines over all 12 controls
++    let sel = g_mob.edit_sel;
++    draw_edit_outline(l.stick_cx - l.stick_r, l.stick_cy - l.stick_r,
++                      l.stick_cx + l.stick_r, l.stick_cy + l.stick_r, sel == CTRL_STICK);
++    draw_edit_outline(l.fire_x1, l.fire_y1, l.fire_x2, l.fire_y2, sel == CTRL_FIRE);
++    draw_edit_outline(l.alt_x1,  l.alt_y1,  l.alt_x2,  l.alt_y2,  sel == CTRL_ALT);
++    draw_edit_outline(l.use_x1,  l.use_y1,  l.use_x2,  l.use_y2,  sel == CTRL_USE);
++    draw_edit_outline(l.shk_x1,  l.shk_y1,  l.shk_x2,  l.shk_y2,  sel == CTRL_SHRK);
++    draw_edit_outline(l.grw_x1,  l.grw_y1,  l.grw_x2,  l.grw_y2,  sel == CTRL_GROW);
++    draw_edit_outline(l.tk_x1,   l.tk_y1,   l.tk_x2,   l.tk_y2,   sel == CTRL_TK);
++    draw_edit_outline(l.up_x1,   l.up_y1,   l.up_x2,   l.up_y2,   sel == CTRL_UP);
++    draw_edit_outline(l.dn_x1,   l.dn_y1,   l.dn_x2,   l.dn_y2,   sel == CTRL_DN);
++    draw_edit_outline(l.brk_x1,  l.brk_y1,  l.brk_x2,  l.brk_y2,  sel == CTRL_BRK);
++    draw_edit_outline(l.rl_x1,   l.rl_y1,   l.rl_x2,   l.rl_y2,   sel == CTRL_RL);
++    draw_edit_outline(l.rr_x1,   l.rr_y1,   l.rr_x2,   l.rr_y2,   sel == CTRL_RR);
++
++    // Top Control Editor Toolbar (non-overlapping with default controls)
++    fbw_box(0, 0, w, l.top_h, 0x0A101CF2, 0xFACC15CC);
++    var tb: u8[160] = [0; 160];
++    var tl: i32 = 0;
++    if sel >= 0 && sel < NUM_CTRLS {
++        buf_str(tb, tl, "EDIT: ");
++        buf_str(tb, tl, ctrl_name(sel));
++        buf_str(tb, tl, " ");
++        buf_int(tb, tl, g_mob.ctrl_scale[sel]);
++        buf_str(tb, tl, "%");
++    } else {
++        buf_str(tb, tl, "CONTROLS EDITOR");
++    }
++    tb[tl] = 0;
++    set_color(0xFACC15FF);
++    fbw_text(12, 8, tb[0..tl], 2);
++    set_color(0xCBD5E1FF);
++    fbw_text(12, 30, "Tap control, drag to move, -/+ resize", 2);
++
++    // Right-side toolbar buttons: [-] [+] [ALL-] [ALL+] [DEF] [SAVE]
++    let bw_sm = clamp_i(w / 18, 44, 62);
++    let bw_md = clamp_i(w / 14, 56, 78);
++    let bw_sv = clamp_i(w / 10, 80, 112);
++    let bh = l.top_h - 12;
++    let gap: i32 = 5;
++    var bx = w - 8 - bw_sv;
++
++    draw_pad_btn(bx, 6, bx + bw_sv, 6 + bh, "SAVE", 0x14532DFF, 0x4ADE80FF);
++    bx = bx - bw_md - gap;
++    draw_pad_btn(bx, 6, bx + bw_md, 6 + bh, "DEF", 0x7C2D12FF, 0xFB923CFF);
++    bx = bx - bw_md - gap;
++    draw_pad_btn(bx, 6, bx + bw_md, 6 + bh, "ALL+", 0x1E3A8AFF, 0x38BDF8FF);
++    bx = bx - bw_md - gap;
++    draw_pad_btn(bx, 6, bx + bw_md, 6 + bh, "ALL-", 0x1E3A8AFF, 0x38BDF8FF);
++    bx = bx - bw_sm - gap;
++    draw_pad_btn(bx, 6, bx + bw_sm, 6 + bh, "+", 0x0284C7FF, 0xFFFFFFFF);
++    bx = bx - bw_sm - gap;
++    draw_pad_btn(bx, 6, bx + bw_sm, 6 + bh, "-", 0x0284C7FF, 0xFFFFFFFF);
++
++    if st.msg_ms > 0 && st.msg_len > 0 {
++        let tw = fbw_text_w(st.msg_buf[0..st.msg_len], 2);
++        let mx = (w - tw) / 2;
++        let by = l.top_h + 8;
++        fbw_box(mx - 12, by, mx + tw + 12, by + 28, 0x0F172AE0, 0x4ADE80AA);
++        set_color(0x4ADE80FF);
++        fbw_text(mx, by + 6, st.msg_buf[0..st.msg_len], 2);
++    }
++}
++
+ fn draw_modal_row_h(mx: i32, y: i32, mw: i32, rh: i32, label: const u8[:], fill: u32, text_col: u32) {
+     fbw_box(mx + 18, y, mx + mw - 18, y + rh, fill, 0x475569FF);
+     set_color(text_col);
+@@ -1607,7 +2303,7 @@ fn draw_modal_row(mx: i32, y: i32, mw: i32, label: const u8[:], fill: u32, text_
+ fn draw_mobile_modal(w: i32, h: i32) {
+     let st = core();
+     let mw = clamp_i((w * 74) / 100, 440, 780);
+-    let mh = clamp_i((h * 80) / 100, 340, 580);
++    let mh = clamp_i((h * 84) / 100, 382, 580);
+     let mx = (w - mw) / 2;
+     let my = (h - mh) / 2;
+ 
+@@ -1813,6 +2509,8 @@ fn draw_mobile_modal(w: i32, h: i32) {
+     } else {
+         set_color(0x38BDF8FF);
+         fbw_text(mx + 22, my + 14, "FRACTAL BLOCK WORLD - PAUSED", 3);
++        set_color(0x4ADE80FF);
++        fbw_text(mx + mw - 156, my + 18, "AUTO-SAVE: ON", 2);
+         draw_modal_row_h(mx, my + 46,  mw, 36, "RESUME GAME", 0x065F46FF, 0xFFFFFFFF);
+         draw_modal_row_h(mx, my + 86,  mw, 36, if st.genesis_mode != 0 { "MODE: GENESIS (TAP FOR CLASSIC)" } else { "MODE: CLASSIC (TAP FOR GENESIS)" }, 0x1E3A8AFF, 0xFACC15FF);
+         draw_modal_row_h(mx, my + 126, mw, 36, if st.shrink_any != 0 { "SHRINK ANY: ON (TAP TO TOGGLE)" } else { "SHRINK ANY: OFF (TAP TO TOGGLE)" }, 0x312E81FF, 0xFFFFFFFF);
+@@ -1859,8 +2557,13 @@ fn draw_mobile_modal(w: i32, h: i32) {
+         let vkx = vx1 + (vw * (2 * vr - 1)) / 6;
+         fbw_box(vkx - 5, vy + 7, vkx + 5, vy + 29, 0xFACC15FF, 0xFFFFFFFF);
+         let rw2 = (mw - 42) / 2;
+-        draw_modal_row_h(mx + 18, my + 286, rw2, 36, "RESTART RUN", 0x7C2D12FF, 0xFFFFFFFF);
+-        draw_modal_row_h(mx + 24 + rw2, my + 286, rw2, 36, "EXIT", 0x7F1D1DFF, 0xFFFFFFFF);
++        draw_modal_row_h(mx + 18, my + 286, rw2, 36, "EDIT CONTROLS", 0x0284C7FF, 0xFFFFFFFF);
++        draw_modal_row_h(mx + 24 + rw2, my + 286, rw2, 36, "RESTART RUN", 0x7C2D12FF, 0xFFFFFFFF);
++        draw_modal_row_h(mx + 18, my + 326, rw2, 36,
++            if g_mob.confirm_reset != 0 { "CONFIRM RESET?" } else { "RESET SAVE" },
++            if g_mob.confirm_reset != 0 { 0xDC2626FF } else { 0x991B1BFF },
++            if g_mob.confirm_reset != 0 { 0xFDE047FF } else { 0xFFFFFFFF });
++        draw_modal_row_h(mx + 24 + rw2, my + 326, rw2, 36, "EXIT", 0x334155FF, 0xFFFFFFFF);
+     }
+ }
+ 
+@@ -1869,11 +2572,15 @@ fn handle_modal_tap(x: i32, y: i32) {
+     let w = g_mob.lay.w;
+     let h = g_mob.lay.h;
+     let mw = clamp_i((w * 74) / 100, 440, 780);
+-    let mh = clamp_i((h * 80) / 100, 400, 580);
++    let mh = clamp_i((h * 84) / 100, 382, 580);
+     let mx = (w - mw) / 2;
+     let my = (h - mh) / 2;
+ 
+     if x < mx || x > mx + mw || y < my || y > my + mh {
++        if st.screen == SCREEN_PAUSE {
++            g_mob.confirm_reset = 0;
++            fbw_mobile_save_now();
++        }
+         st.screen = SCREEN_PLAY;
+         return;
+     }
+@@ -1991,31 +2698,43 @@ fn handle_modal_tap(x: i32, y: i32) {
+         }
+     } else if st.screen == SCREEN_VICTORY {
+         if y >= my + 140 && y <= my + 186 { st.screen = SCREEN_PLAY; return; }
+-        if y >= my + 200 && y <= my + 246 { init_new_game(); st.screen = SCREEN_PLAY; g_mob.sync_force = 1; return; }
+-        if y >= my + 260 && y <= my + 306 { g_mob.want_exit_to_calc = 1; return; }
++        if y >= my + 200 && y <= my + 246 { init_new_game(); fbw_mobile_save_now(); st.screen = SCREEN_PLAY; g_mob.sync_force = 1; return; }
++        if y >= my + 260 && y <= my + 306 { fbw_mobile_save_now(); g_mob.want_exit_to_calc = 1; return; }
+     } else if st.screen == SCREEN_PAUSE {
+-        if y >= my + 46 && y <= my + 82 { st.screen = SCREEN_PLAY; return; }
++        if y >= my + 46 && y <= my + 82 {
++            g_mob.confirm_reset = 0;
++            fbw_mobile_save_now();
++            st.screen = SCREEN_PLAY;
++            return;
++        }
+         if y >= my + 86 && y <= my + 122 {
++            g_mob.confirm_reset = 0;
+             st.genesis_mode = if st.genesis_mode != 0 { 0 } else { 1 };
+             init_new_game();
++            fbw_mobile_save_now();
+             st.screen = SCREEN_PLAY;
+             g_mob.sync_force = 1;
+             return;
+         }
+         if y >= my + 126 && y <= my + 162 {
++            g_mob.confirm_reset = 0;
+             st.shrink_any = if st.shrink_any != 0 { 0 } else { 1 };
++            fbw_mobile_save_now();
+             st.screen = SCREEN_PLAY;
+             return;
+         }
+         if y >= my + 166 && y <= my + 202 {
++            g_mob.confirm_reset = 0;
+             st.disable_lod = if st.disable_lod != 0 { 0 } else { 1 };
+             g_mob.inw_force = 1;
+             fbw_gl_set_lod_config(st.disable_lod, st.lod_dist_level);
++            fbw_mobile_save_now();
+             set_status_msg(if st.disable_lod != 0 { "LOD Opt OFF: Full On-Screen Detail" } else { "LOD Opt ON: 3-Tier Volumetric" }, 1400);
+             st.screen = SCREEN_PLAY;
+             return;
+         }
+         if y >= my + 206 && y <= my + 242 {
++            g_mob.confirm_reset = 0;
+             let tx1 = mx + (mw * 42) / 100;
+             let tx2 = mx + mw - 30;
+             let tw = tx2 - tx1;
+@@ -2026,12 +2745,14 @@ fn handle_modal_tap(x: i32, y: i32) {
+                 lv = (clamp_i(lv, 1, 7) % 7) + 1;
+             }
+             st.lod_dist_level = lv;
++            st.autosave_dirty = 1;
+             g_mob.inw_force = 1;
+             fbw_gl_set_lod_config(st.disable_lod, st.lod_dist_level);
+             fbw_sound_fx(0);
+             return;
+         }
+         if y >= my + 246 && y <= my + 282 {
++            g_mob.confirm_reset = 0;
+             let vx1 = mx + (mw * 42) / 100;
+             let vx2 = mx + mw - 30;
+             let vw = vx2 - vx1;
+@@ -2043,6 +2764,7 @@ fn handle_modal_tap(x: i32, y: i32) {
+             }
+             if vr != st.view_chunk_radius {
+                 st.view_chunk_radius = vr;
++                st.autosave_dirty = 1;
+                 load_current_chunk();
+                 var nv: i32 = 0;
+                 var ci: i32 = 0;
+@@ -2066,12 +2788,35 @@ fn handle_modal_tap(x: i32, y: i32) {
+         }
+         let rw2 = (mw - 42) / 2;
+         if in_box(x, y, mx + 18, my + 286, mx + 18 + rw2, my + 322) {
++            g_mob.confirm_reset = 0;
++            g_mob.edit_sel = CTRL_FIRE;
++            g_mob.edit_drag_pid = -1;
++            st.screen = SCREEN_EDIT_UI;
++            fbw_sound_fx(SFX_CLICK);
++            return;
++        }
++        if in_box(x, y, mx + 24 + rw2, my + 286, mx + mw - 18, my + 322) {
++            g_mob.confirm_reset = 0;
+             init_new_game();
++            fbw_mobile_save_now();
+             st.screen = SCREEN_PLAY;
+             g_mob.sync_force = 1;
+             return;
+         }
+-        if in_box(x, y, mx + 24 + rw2, my + 286, mx + mw - 18, my + 322) {
++        if in_box(x, y, mx + 18, my + 326, mx + 18 + rw2, my + 362) {
++            if g_mob.confirm_reset == 0 {
++                g_mob.confirm_reset = 1;
++                fbw_sound_fx(SFX_CLICK);
++                set_status_msg("Tap CONFIRM RESET again to wipe save & reset controls!", 2200);
++            } else {
++                fbw_reset_save();
++                fbw_sound_fx(SFX_WARP);
++            }
++            return;
++        }
++        if in_box(x, y, mx + 24 + rw2, my + 326, mx + mw - 18, my + 362) {
++            g_mob.confirm_reset = 0;
++            fbw_mobile_save_now();
+             g_mob.want_exit_to_calc = 1;
+             return;
+         }
+@@ -2125,7 +2870,13 @@ fn handle_top_bar_tap(x: i32, y: i32) -> bool {
+     var bx = l.w - 10 - btn_w;
+ 
+     if x >= bx && x <= bx + btn_w {
+-        st.screen = if st.screen == SCREEN_PAUSE { SCREEN_PLAY } else { SCREEN_PAUSE };
++        g_mob.confirm_reset = 0;
++        if st.screen == SCREEN_PAUSE {
++            st.screen = SCREEN_PLAY;
++        } else {
++            fbw_mobile_save_now();
++            st.screen = SCREEN_PAUSE;
++        }
+         return true;
+     }
+     bx = bx - btn_w - gap;
+@@ -2142,28 +2893,188 @@ fn handle_top_bar_tap(x: i32, y: i32) -> bool {
+     bx = bx - btn_w - gap;
+     if x >= bx && x <= bx + btn_w {
+         st.true_up = if st.true_up != 0 { 0 } else { 1 };
++        st.autosave_dirty = 1;
+         set_status_msg(if st.true_up != 0 { "True Up ON" } else { "Free 3D Roll ON" }, 1100);
+         return true;
+     }
+     bx = bx - btn_w - gap;
+     if x >= bx && x <= bx + btn_w {
+         st.rocket_mode = if st.rocket_mode != 0 { 0 } else { 1 };
++        st.autosave_dirty = 1;
+         set_status_msg(if st.rocket_mode != 0 { "Rocket Mode ON" } else { "Rocket Mode OFF" }, 1100);
+         return true;
+     }
+     bx = bx - btn_w - gap;
+     if x >= bx && x <= bx + btn_w {
+         st.show_minimap = if st.show_minimap != 0 { 0 } else { 1 };
++        st.autosave_dirty = 1;
+         return true;
+     }
+     return true;
+ }
+ 
++fn ctrl_center_from_layout(l: MobileLayout&, id: i32, cx_out: i32&, cy_out: i32&) {
++    if id == CTRL_STICK { cx_out = l.stick_cx; cy_out = l.stick_cy; }
++    else if id == CTRL_FIRE { cx_out = (l.fire_x1 + l.fire_x2) / 2; cy_out = (l.fire_y1 + l.fire_y2) / 2; }
++    else if id == CTRL_ALT  { cx_out = (l.alt_x1 + l.alt_x2) / 2;   cy_out = (l.alt_y1 + l.alt_y2) / 2; }
++    else if id == CTRL_USE  { cx_out = (l.use_x1 + l.use_x2) / 2;   cy_out = (l.use_y1 + l.use_y2) / 2; }
++    else if id == CTRL_SHRK { cx_out = (l.shk_x1 + l.shk_x2) / 2;   cy_out = (l.shk_y1 + l.shk_y2) / 2; }
++    else if id == CTRL_GROW { cx_out = (l.grw_x1 + l.grw_x2) / 2;   cy_out = (l.grw_y1 + l.grw_y2) / 2; }
++    else if id == CTRL_TK   { cx_out = (l.tk_x1 + l.tk_x2) / 2;     cy_out = (l.tk_y1 + l.tk_y2) / 2; }
++    else if id == CTRL_UP   { cx_out = (l.up_x1 + l.up_x2) / 2;     cy_out = (l.up_y1 + l.up_y2) / 2; }
++    else if id == CTRL_DN   { cx_out = (l.dn_x1 + l.dn_x2) / 2;     cy_out = (l.dn_y1 + l.dn_y2) / 2; }
++    else if id == CTRL_BRK  { cx_out = (l.brk_x1 + l.brk_x2) / 2;   cy_out = (l.brk_y1 + l.brk_y2) / 2; }
++    else if id == CTRL_RL   { cx_out = (l.rl_x1 + l.rl_x2) / 2;     cy_out = (l.rl_y1 + l.rl_y2) / 2; }
++    else if id == CTRL_RR   { cx_out = (l.rr_x1 + l.rr_x2) / 2;     cy_out = (l.rr_y1 + l.rr_y2) / 2; }
++}
++
++fn hit_test_control(l: MobileLayout&, x: i32, y: i32) -> i32 {
++    if in_box(x, y, l.fire_x1, l.fire_y1, l.fire_x2, l.fire_y2) { return CTRL_FIRE; }
++    if in_box(x, y, l.alt_x1,  l.alt_y1,  l.alt_x2,  l.alt_y2)  { return CTRL_ALT; }
++    if in_box(x, y, l.use_x1,  l.use_y1,  l.use_x2,  l.use_y2)  { return CTRL_USE; }
++    if in_box(x, y, l.shk_x1,  l.shk_y1,  l.shk_x2,  l.shk_y2)  { return CTRL_SHRK; }
++    if in_box(x, y, l.grw_x1,  l.grw_y1,  l.grw_x2,  l.grw_y2)  { return CTRL_GROW; }
++    if in_box(x, y, l.tk_x1,   l.tk_y1,   l.tk_x2,   l.tk_y2)   { return CTRL_TK; }
++    if in_box(x, y, l.up_x1,   l.up_y1,   l.up_x2,   l.up_y2)   { return CTRL_UP; }
++    if in_box(x, y, l.dn_x1,   l.dn_y1,   l.dn_x2,   l.dn_y2)   { return CTRL_DN; }
++    if in_box(x, y, l.brk_x1,  l.brk_y1,  l.brk_x2,  l.brk_y2)  { return CTRL_BRK; }
++    if in_box(x, y, l.rl_x1,   l.rl_y1,   l.rl_x2,   l.rl_y2)   { return CTRL_RL; }
++    if in_box(x, y, l.rr_x1,   l.rr_y1,   l.rr_x2,   l.rr_y2)   { return CTRL_RR; }
++    if in_box(x, y, l.stick_cx - l.stick_r, l.stick_cy - l.stick_r,
++                    l.stick_cx + l.stick_r, l.stick_cy + l.stick_r) { return CTRL_STICK; }
++    return -1;
++}
++
++fn handle_edit_ui_pointer(x: i32, y: i32, pid: i32, ev_type: i32) {
++    let st = core();
++    let l = &g_mob.lay;
++    if ev_type == PTR_DOWN {
++        if y <= l.top_h {
++            let bw_sm = clamp_i(l.w / 18, 44, 62);
++            let bw_md = clamp_i(l.w / 14, 56, 78);
++            let bw_sv = clamp_i(l.w / 10, 80, 112);
++            let gap: i32 = 5;
++            var bx = l.w - 8 - bw_sv;
++            if x >= bx && x <= bx + bw_sv {
++                let _ = fbw_save_game();
++                g_mob.edit_drag_pid = -1;
++                st.screen = SCREEN_PLAY;
++                fbw_sound_fx(SFX_PICKUP);
++                set_status_msg("Controls & progress saved!", 1600);
++                return;
++            }
++            bx = bx - bw_md - gap;
++            if x >= bx && x <= bx + bw_md {
++                reset_default_controls();
++                g_mob.lay = compute_mobile_layout(l.w, l.h);
++                st.autosave_dirty = 1;
++                fbw_sound_fx(SFX_CLICK);
++                set_status_msg("Controls reset to default!", 1400);
++                return;
++            }
++            bx = bx - bw_md - gap;
++            if x >= bx && x <= bx + bw_md {
++                var i: i32 = 0;
++                while i < NUM_CTRLS {
++                    g_mob.ctrl_scale[i] = clamp_i(g_mob.ctrl_scale[i] + 10, 50, 220);
++                    i = i + 1;
++                }
++                g_mob.lay = compute_mobile_layout(l.w, l.h);
++                st.autosave_dirty = 1;
++                fbw_sound_fx(SFX_CLICK);
++                return;
++            }
++            bx = bx - bw_md - gap;
++            if x >= bx && x <= bx + bw_md {
++                var i: i32 = 0;
++                while i < NUM_CTRLS {
++                    g_mob.ctrl_scale[i] = clamp_i(g_mob.ctrl_scale[i] - 10, 50, 220);
++                    i = i + 1;
++                }
++                g_mob.lay = compute_mobile_layout(l.w, l.h);
++                st.autosave_dirty = 1;
++                fbw_sound_fx(SFX_CLICK);
++                return;
++            }
++            bx = bx - bw_sm - gap;
++            if x >= bx && x <= bx + bw_sm {
++                let sel = g_mob.edit_sel;
++                if sel >= 0 && sel < NUM_CTRLS {
++                    g_mob.ctrl_scale[sel] = clamp_i(g_mob.ctrl_scale[sel] + 10, 50, 220);
++                    g_mob.lay = compute_mobile_layout(l.w, l.h);
++                    st.autosave_dirty = 1;
++                    fbw_sound_fx(SFX_CLICK);
++                } else {
++                    set_status_msg("Tap any control first!", 1200);
++                }
++                return;
++            }
++            bx = bx - bw_sm - gap;
++            if x >= bx && x <= bx + bw_sm {
++                let sel = g_mob.edit_sel;
++                if sel >= 0 && sel < NUM_CTRLS {
++                    g_mob.ctrl_scale[sel] = clamp_i(g_mob.ctrl_scale[sel] - 10, 50, 220);
++                    g_mob.lay = compute_mobile_layout(l.w, l.h);
++                    st.autosave_dirty = 1;
++                    fbw_sound_fx(SFX_CLICK);
++                } else {
++                    set_status_msg("Tap any control first!", 1200);
++                }
++                return;
++            }
++            return;
++        }
++
++        let hit = hit_test_control(g_mob.lay, x, y);
++        if hit >= 0 {
++            g_mob.edit_sel = hit;
++            g_mob.edit_drag_pid = pid;
++            var cx: i32 = x;
++            var cy: i32 = y;
++            ctrl_center_from_layout(g_mob.lay, hit, cx, cy);
++            g_mob.edit_drag_dx = cx - x;
++            g_mob.edit_drag_dy = cy - y;
++            fbw_sound_fx(SFX_CLICK);
++        }
++        return;
++    }
++
++    if ev_type == PTR_MOVE {
++        if g_mob.edit_drag_pid == pid && g_mob.edit_sel >= 0 && g_mob.edit_sel < NUM_CTRLS {
++            let sel = g_mob.edit_sel;
++            let tx = x + g_mob.edit_drag_dx;
++            let ty = y + g_mob.edit_drag_dy;
++            let dl = compute_default_layout(l.w, l.h);
++            var def_cx: i32 = tx;
++            var def_cy: i32 = ty;
++            ctrl_center_from_layout(dl, sel, def_cx, def_cy);
++            if l.w > 0 && l.h > 0 {
++                g_mob.ctrl_ox[sel] = clamp_i(((tx - def_cx) * 1000) / l.w, -850, 850);
++                g_mob.ctrl_oy[sel] = clamp_i(((ty - def_cy) * 1000) / l.h, -850, 850);
++                g_mob.lay = compute_mobile_layout(l.w, l.h);
++                st.autosave_dirty = 1;
++            }
++        }
++        return;
++    }
++
++    if ev_type == PTR_UP {
++        if g_mob.edit_drag_pid == pid {
++            g_mob.edit_drag_pid = -1;
++        }
++    }
++}
++
+ fn fbw_mobile_pointer(x: i32, y: i32, pid_in: i32, ev_type: i32) {
+     let st = core();
+     let pid = clamp_i(pid_in, 0, MAX_POINTERS - 1);
+     let l = &g_mob.lay;
+ 
++    if st.screen == SCREEN_EDIT_UI {
++        handle_edit_ui_pointer(x, y, pid, ev_type);
++        return;
++    }
++
+     if ev_type == PTR_DOWN {
+         if st.screen != SCREEN_PLAY {
+             g_mob.ptrs[pid].active = 1;
+@@ -2264,7 +3175,7 @@ fn fbw_mobile_pointer(x: i32, y: i32, pid_in: i32, ev_type: i32) {
+         g_mob.ptrs[pid].cur_y = y;
+         if st.screen == SCREEN_PAUSE {
+             let mw = clamp_i((l.w * 74) / 100, 440, 780);
+-            let mh = clamp_i((l.h * 80) / 100, 340, 580);
++            let mh = clamp_i((l.h * 84) / 100, 382, 580);
+             let mx = (l.w - mw) / 2;
+             let my = (l.h - mh) / 2;
+             let tx1 = mx + (mw * 42) / 100;
+@@ -2274,6 +3185,7 @@ fn fbw_mobile_pointer(x: i32, y: i32, pid_in: i32, ev_type: i32) {
+                 let lv = clamp_i(1 + ((x - tx1) * 7) / tw, 1, 7);
+                 if lv != st.lod_dist_level {
+                     st.lod_dist_level = lv;
++                    st.autosave_dirty = 1;
+                     g_mob.inw_force = 1;
+                     fbw_gl_set_lod_config(st.disable_lod, st.lod_dist_level);
+                 }

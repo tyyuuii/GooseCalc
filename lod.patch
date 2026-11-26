@@ -1,0 +1,510 @@
+diff --git a/fbw_gl.c b/fbw_gl.c
+index 42809a1..cc93862 100644
+--- a/fbw_gl.c
++++ b/fbw_gl.c
+@@ -670,6 +670,20 @@ static inline uint8_t neighbor_at_offset(int ox, int oy, int oz, int lx, int ly,
+     return BLK_AIR;
+ }
+ 
++static inline int is_l1_covered_by_neighbor(int x, int y, int z) {
++    if (!g_parent_valid[0]) return 0;
++    int dx = x - g_parent_bx[0];
++    int dy = y - g_parent_by[0];
++    int dz = z - g_parent_bz[0];
++    for (int nb = 0; nb < MAX_NEIGHBORS; nb++) {
++        if (g_neighbor_valid[nb] &&
++            g_neighbor_dx[nb] == dx && g_neighbor_dy[nb] == dy && g_neighbor_dz[nb] == dz) {
++            return 1;
++        }
++    }
++    return 0;
++}
++
+ static inline uint8_t chunk_at(int layer, int x, int y, int z) {
+     if (x >= 0 && x < 16 && y >= 0 && y < 16 && z >= 0 && z < 16) {
+         return g_chunks[layer][(y << 8) | (z << 4) | x];
+@@ -694,6 +708,9 @@ static inline int nb_chunk_occ(int nb_slot, int x, int y, int z) {
+     int wx = g_neighbor_dx[nb_slot] * 16 + x;
+     int wy = g_neighbor_dy[nb_slot] * 16 + y;
+     int wz = g_neighbor_dz[nb_slot] * 16 + z;
++    if (wx >= 0 && wx < 16 && wy >= 0 && wy < 16 && wz >= 0 && wz < 16) {
++        if (g_inward_grid[(wy << 8) | (wz << 4) | wx] >= 0) return 0;
++    }
+     return chunk_at(0, wx, wy, wz) != BLK_AIR ? 1 : 0;
+ }
+ 
+@@ -715,6 +732,9 @@ static inline int inward_occ(int layer, int slot, int lx, int ly, int lz,
+     if (skip_hole && nx == hole_x && ny == hole_y && nz == hole_z) {
+         return 0;
+     }
++    if (layer == 1 && skip_hole && nx >= 0 && nx < 16 && ny >= 0 && ny < 16 && nz >= 0 && nz < 16) {
++        if (is_l1_covered_by_neighbor(nx, ny, nz)) return 0;
++    }
+     uint8_t nb = chunk_at(layer, nx, ny, nz);
+     if (nb == BLK_AIR) return 0;
+     if (nx >= 0 && nx < 16 && ny >= 0 && ny < 16 && nz >= 0 && nz < 16) {
+@@ -784,6 +804,9 @@ static inline int pooled_occ(const uint8_t *pooled, int dim,
+     int ny = ly + (py < 0 ? -1 : (py >= dim ? 1 : 0));
+     int nz = lz + (pz < 0 ? -1 : (pz >= dim ? 1 : 0));
+     if (skip_hole && nx == hole_x && ny == hole_y && nz == hole_z) return 0;
++    if (layer == 1 && skip_hole && nx >= 0 && nx < 16 && ny >= 0 && ny < 16 && nz >= 0 && nz < 16) {
++        if (is_l1_covered_by_neighbor(nx, ny, nz)) return 0;
++    }
+     uint8_t nb = chunk_at(layer, nx, ny, nz);
+     if (nb == BLK_AIR) return 0;
+     if (nx >= 0 && nx < 16 && ny >= 0 && ny < 16 && nz >= 0 && nz < 16) {
+@@ -1052,6 +1075,22 @@ static void mesh_neighbor_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_gro
+     }
+ }
+ 
++static inline int mesh_layer_occ(int layer, int x, int y, int z,
++                                 int hole_x, int hole_y, int hole_z, int skip_hole,
++                                 int skip_inward) {
++    if (skip_hole && x == hole_x && y == hole_y && z == hole_z) return 0;
++    if (layer == 1 && skip_hole && x >= 0 && x < 16 && y >= 0 && y < 16 && z >= 0 && z < 16) {
++        if (is_l1_covered_by_neighbor(x, y, z)) return 0;
++    }
++    if (skip_inward && (layer == 0 || layer == 1) &&
++        x >= 0 && x < 16 && y >= 0 && y < 16 && z >= 0 && z < 16) {
++        int slot = (layer == 0) ? g_inward_grid[(y << 8) | (z << 4) | x]
++                                : g_l1_inward_grid[(y << 8) | (z << 4) | x];
++        if (slot >= 0) return 0;
++    }
++    return chunk_occ(layer, x, y, z);
++}
++
+ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
+                           int layer, float scale, float ox, float oy, float oz,
+                           int hole_x, int hole_y, int hole_z, int skip_hole,
+@@ -1063,6 +1102,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
+                 uint8_t blk = g_chunks[layer][(y << 8) | (z << 4) | x];
+                 if (blk == BLK_AIR) continue;
+                 if (skip_hole && x == hole_x && y == hole_y && z == hole_z) continue;
++                if (layer == 1 && skip_hole && is_l1_covered_by_neighbor(x, y, z)) continue;
+ 
+                 if (skip_inward && (layer == 0 || layer == 1)) {
+                     int slot = (layer == 0) ? g_inward_grid[(y << 8) | (z << 4) | x]
+@@ -1084,7 +1124,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
+                 float wz1 = wz0 + scale;
+ 
+                 // +Y with smooth corner AO
+-                if (!chunk_occ(layer, x, y + 1, z)) {
++                if (!mesh_layer_occ(layer, x, y + 1, z, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
+                     float a0 = corner_ao(chunk_occ(layer, x - 1, y + 1, z),
+                                          chunk_occ(layer, x, y + 1, z + 1),
+                                          chunk_occ(layer, x - 1, y + 1, z + 1));
+@@ -1101,7 +1141,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
+                                      1.05f * a0, 1.05f * a1, 1.05f * a2, 1.05f * a3, style, r, g, b, 255);
+                 }
+                 // -Y
+-                if (!chunk_occ(layer, x, y - 1, z)) {
++                if (!mesh_layer_occ(layer, x, y - 1, z, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
+                     float a0 = corner_ao(chunk_occ(layer, x - 1, y - 1, z),
+                                          chunk_occ(layer, x, y - 1, z - 1),
+                                          chunk_occ(layer, x - 1, y - 1, z - 1));
+@@ -1118,7 +1158,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
+                                      0.60f * a0, 0.60f * a1, 0.60f * a2, 0.60f * a3, style, r, g, b, 255);
+                 }
+                 // +X
+-                if (!chunk_occ(layer, x + 1, y, z)) {
++                if (!mesh_layer_occ(layer, x + 1, y, z, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
+                     float a0 = corner_ao(chunk_occ(layer, x + 1, y - 1, z),
+                                          chunk_occ(layer, x + 1, y, z + 1),
+                                          chunk_occ(layer, x + 1, y - 1, z + 1));
+@@ -1135,7 +1175,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
+                                      0.88f * a0, 0.88f * a1, 0.88f * a2, 0.88f * a3, style, r, g, b, 255);
+                 }
+                 // -X
+-                if (!chunk_occ(layer, x - 1, y, z)) {
++                if (!mesh_layer_occ(layer, x - 1, y, z, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
+                     float a0 = corner_ao(chunk_occ(layer, x - 1, y - 1, z),
+                                          chunk_occ(layer, x - 1, y, z - 1),
+                                          chunk_occ(layer, x - 1, y - 1, z - 1));
+@@ -1152,7 +1192,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
+                                      0.76f * a0, 0.76f * a1, 0.76f * a2, 0.76f * a3, style, r, g, b, 255);
+                 }
+                 // +Z
+-                if (!chunk_occ(layer, x, y, z + 1)) {
++                if (!mesh_layer_occ(layer, x, y, z + 1, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
+                     float a0 = corner_ao(chunk_occ(layer, x - 1, y, z + 1),
+                                          chunk_occ(layer, x, y - 1, z + 1),
+                                          chunk_occ(layer, x - 1, y - 1, z + 1));
+@@ -1169,7 +1209,7 @@ static void mesh_layer_to(FbwVert **pbuf, int *cnt, int *max_v, int allow_grow,
+                                      0.95f * a0, 0.95f * a1, 0.95f * a2, 0.95f * a3, style, r, g, b, 255);
+                 }
+                 // -Z
+-                if (!chunk_occ(layer, x, y, z - 1)) {
++                if (!mesh_layer_occ(layer, x, y, z - 1, hole_x, hole_y, hole_z, skip_hole, skip_inward)) {
+                     float a0 = corner_ao(chunk_occ(layer, x + 1, y, z - 1),
+                                          chunk_occ(layer, x, y - 1, z - 1),
+                                          chunk_occ(layer, x + 1, y - 1, z - 1));
+@@ -1302,7 +1342,8 @@ static void rebuild_dirty_inward_slots(const double ox[MAX_PARENTS], const doubl
+     float l1oy = g_parent_valid[0] ? (float)oy[0] : 0.0f;
+     float l1oz = g_parent_valid[0] ? (float)oz[0] : 0.0f;
+     for (si = 0; si < MAX_L1_INWARD_SLOTS; si++) {
+-        if (!g_l1_inward_valid[si] || !g_parent_valid[0]) {
++        if (!g_l1_inward_valid[si] || !g_parent_valid[0] ||
++            is_l1_covered_by_neighbor(g_l1_inward_bx[si], g_l1_inward_by[si], g_l1_inward_bz[si])) {
+             g_l1_inw_vcnt[si] = 0;
+             g_l1_inw_vbo_dirty[si] = 0;
+             continue;
+@@ -1929,7 +1970,7 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
+ 
+     // 4. Band 1: Active 1x + 10 Neighbors + Per-Slot Inward 1/16x LOD + Layer 1 (16x) + Entities
+     glClear(GL_DEPTH_BUFFER_BIT);
+-    build_mvp_band(mvp, aspect, g_cam_x, g_cam_y, g_cam_z, 0.15f, 420.0f);
++    build_mvp_band(mvp, aspect, g_cam_x, g_cam_y, g_cam_z, 0.08f, 280.0f);
+     glUniformMatrix4fv(g_u_mvp, 1, GL_FALSE, mvp);
+     glUniform3f(g_u_cam, g_cam_x, g_cam_y, g_cam_z);
+     glUniform2f(g_u_fog_params, 32.0f, 260.0f);
+@@ -1945,7 +1986,8 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
+     }
+     if (g_parent_valid[0]) {
+         for (int si = 0; si < MAX_L1_INWARD_SLOTS; si++) {
+-            if (g_l1_inward_valid[si] && g_l1_inw_vcnt[si] > 0) {
++            if (g_l1_inward_valid[si] && g_l1_inw_vcnt[si] > 0 &&
++                !is_l1_covered_by_neighbor(g_l1_inward_bx[si], g_l1_inward_by[si], g_l1_inward_bz[si])) {
+                 draw_vert_buffer(g_l1_inw_vbos[si], g_l1_inw_vcnt[si]);
+             }
+         }
+diff --git a/src/fbw_core.goose b/src/fbw_core.goose
+index 5e77627..b407add 100644
+--- a/src/fbw_core.goose
++++ b/src/fbw_core.goose
+@@ -2493,7 +2493,29 @@ fn shrink_into_ex(bx: i32, by: i32, bz: i32, target_blk: u8, forced_biome: i32,
+             if point_collides(new_px, new_py, new_pz) != 0 {
+                 new_px = 8.0; new_py = 3.2; new_pz = 6.5;
+                 if point_collides(new_px, new_py, new_pz) != 0 {
+-                    new_px = 8.0; new_py = 8.0; new_pz = 8.0;
++                    new_px = 8.5; new_py = 9.5; new_pz = 8.5;
++                }
++                if point_collides(new_px, new_py, new_pz) != 0 {
++                    var found_clr: i32 = 0;
++                    var cy_c: i32 = 2;
++                    while cy_c <= 13 && found_clr == 0 {
++                        var cz_c: i32 = 2;
++                        while cz_c <= 13 && found_clr == 0 {
++                            var cx_c: i32 = 2;
++                            while cx_c <= 13 && found_clr == 0 {
++                                let tx = (cx_c as f64) + 0.5;
++                                let ty = (cy_c as f64) + 0.5;
++                                let tz = (cz_c as f64) + 0.5;
++                                if point_collides(tx, ty, tz) == 0 {
++                                    new_px = tx; new_py = ty; new_pz = tz;
++                                    found_clr = 1;
++                                }
++                                cx_c = cx_c + 1;
++                            }
++                            cz_c = cz_c + 1;
++                        }
++                        cy_c = cy_c + 1;
++                    }
+                 }
+             }
+         }
+@@ -2604,6 +2626,28 @@ fn grow_out_axis(exit_x: f64, exit_y: f64, exit_z: f64) {
+         st.px = 8.5;
+         st.py = 11.5;
+         st.pz = 8.5;
++        if point_collides(st.px, st.py, st.pz) != 0 {
++            var found_g: i32 = 0;
++            var cy_g: i32 = 2;
++            while cy_g <= 13 && found_g == 0 {
++                var cz_g: i32 = 2;
++                while cz_g <= 13 && found_g == 0 {
++                    var cx_g: i32 = 2;
++                    while cx_g <= 13 && found_g == 0 {
++                        let tx = (cx_g as f64) + 0.5;
++                        let ty = (cy_g as f64) + 0.5;
++                        let tz = (cz_g as f64) + 0.5;
++                        if point_collides(tx, ty, tz) == 0 {
++                            st.px = tx; st.py = ty; st.pz = tz;
++                            found_g = 1;
++                        }
++                        cx_g = cx_g + 1;
++                    }
++                    cz_g = cz_g + 1;
++                }
++                cy_g = cy_g + 1;
++            }
++        }
+     }
+ 
+     if was_air != 0 {
+@@ -2832,7 +2876,7 @@ fn point_collides(x: f64, y: f64, z: f64) -> i32 {
+                 let bx = ffloor(x + dx * rad);
+                 let by = ffloor(y + dy * rad);
+                 let bz = ffloor(z + dz * rad);
+-                let blk = get_block(bx, by, bz);
++                let blk = world_block_rel(bx, by, bz);
+                 if is_block_solid(blk) != 0 {
+                     return 1;
+                 }
+@@ -2983,6 +3027,28 @@ fn scratch_point_collides(x: f64, y: f64, z: f64) -> i32 {
+     return 0;
+ }
+ 
++fn settle_post_cross_clearance(axis: i32) {
++    if point_collides(st.px, st.py, st.pz) == 0 { return; }
++    var tx = st.px;
++    var ty = st.py;
++    var tz = st.pz;
++    if axis != 0 {
++        if tx < 0.25 { tx = 0.26; }
++        else if tx > 15.75 { tx = 15.74; }
++    }
++    if axis != 1 {
++        if ty < 0.25 { ty = 0.26; }
++        else if ty > 15.75 { ty = 15.74; }
++    }
++    if axis != 2 {
++        if tz < 0.25 { tz = 0.26; }
++        else if tz > 15.75 { tz = 15.74; }
++    }
++    if point_collides(tx, ty, tz) == 0 {
++        st.px = tx; st.py = ty; st.pz = tz;
++    }
++}
++
+ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: f64) -> i32 {
+     let sdx: i32 = if axis == 0 { sdir } else { 0 };
+     let sdy: i32 = if axis == 1 { sdir } else { 0 };
+@@ -3074,6 +3140,7 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z:
+         st.px = nx_w;
+         st.py = ny_w;
+         st.pz = nz_w;
++        settle_post_cross_clearance(axis);
+         return 1;
+     }
+ 
+@@ -3085,36 +3152,16 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z:
+ 
+         if cur_d == st.depth {
+             generate_chunk_blocks_to(5, st.depth, top_bio, tblk, top_seed, 0);
+-            var hit_ok = if scratch_point_collides(nx_w, ny_w, nz_w) == 0 { 1 } else { 0 };
+-            var adj_x = nx_w;
+-            var adj_y = ny_w;
+-            var adj_z = nz_w;
+-            if hit_ok == 0 && mol_locked == 0 {
+-                var ty_i: i32 = -1;
+-                while ty_i <= 1 && hit_ok == 0 {
+-                    var tx_i: i32 = -1;
+-                    while tx_i <= 1 && hit_ok == 0 {
+-                        let px_t = if axis == 0 { nx_w } else { fclamp(nx_w + (tx_i as f64) * 0.65, 0.35, 15.65) };
+-                        let py_t = if axis == 1 { ny_w } else { fclamp(ny_w + (ty_i as f64) * 0.65, 0.35, 15.65) };
+-                        let pz_t = if axis == 2 { nz_w } else { fclamp(nz_w + ((if axis == 0 { tx_i } else { ty_i }) as f64) * 0.65, 0.35, 15.65) };
+-                        if scratch_point_collides(px_t, py_t, pz_t) == 0 {
+-                            adj_x = px_t; adj_y = py_t; adj_z = pz_t;
+-                            hit_ok = 1;
+-                        }
+-                        tx_i = tx_i + 1;
+-                    }
+-                    ty_i = ty_i + 1;
+-                }
+-            }
+-            if hit_ok != 0 {
++            if scratch_point_collides(nx_w, ny_w, nz_w) == 0 {
+                 set_frame(cur_d, ScaleFrame {
+                     bx: target_bx, by: target_by, bz: target_bz,
+                     biome: top_bio, parent_block: tblk, seed: top_seed
+                 });
+                 load_current_chunk();
+-                st.px = adj_x;
+-                st.py = adj_y;
+-                st.pz = adj_z;
++                st.px = nx_w;
++                st.py = ny_w;
++                st.pz = nz_w;
++                settle_post_cross_clearance(axis);
+                 st.flash_ms = 120;
+                 st.flash_rgb = pack_rgb(40, 235, 130);
+                 set_status_msg("Crossed into adjacent fractal chunk!", 1200);
+@@ -3138,6 +3185,7 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z:
+                 st.px = sx;
+                 st.py = sy;
+                 st.pz = sz;
++                settle_post_cross_clearance(axis);
+                 st.ring_cd_ms = 180;
+                 set_status_msg("ShrinkAny passed through solid wall!", 1400);
+                 return 1;
+@@ -3156,9 +3204,6 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z:
+                 if rblk != BLK_AIR {
+                     generate_chunk_blocks_to(5, wd - 1, rbio, rblk, rseed, rair);
+                     rblk = dst_get_block(5, wbx, wby, wbz);
+-                    if rblk != BLK_AIR && wd < st.depth {
+-                        return 0;
+-                    }
+                 }
+                 let nbio = resolve_child_frame_biome(rseed, wd - 1, rbio, wbx, wby, wbz, rblk, -1);
+                 rseed = resolve_child_frame_seed(rseed, wd - 1, wbx, wby, wbz, rblk);
+@@ -3167,28 +3212,8 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z:
+                 wd = wd + 1;
+             }
+             generate_chunk_blocks_to(5, st.depth, rbio, rblk, rseed, rair);
+-            var d_hit_ok = if scratch_point_collides(nx_w, ny_w, nz_w) == 0 { 1 } else { 0 };
+-            var d_ax = nx_w;
+-            var d_ay = ny_w;
+-            var d_az = nz_w;
+-            if d_hit_ok == 0 && mol_locked == 0 {
+-                var ty_i: i32 = -1;
+-                while ty_i <= 1 && d_hit_ok == 0 {
+-                    var tx_i: i32 = -1;
+-                    while tx_i <= 1 && d_hit_ok == 0 {
+-                        let px_t = if axis == 0 { nx_w } else { fclamp(nx_w + (tx_i as f64) * 0.75, 0.35, 15.65) };
+-                        let py_t = if axis == 1 { ny_w } else { fclamp(ny_w + (ty_i as f64) * 0.75, 0.35, 15.65) };
+-                        let pz_t = if axis == 2 { nz_w } else { fclamp(nz_w + ((if axis == 0 { tx_i } else { ty_i }) as f64) * 0.75, 0.35, 15.65) };
+-                        if scratch_point_collides(px_t, py_t, pz_t) == 0 {
+-                            d_ax = px_t; d_ay = py_t; d_az = pz_t;
+-                            d_hit_ok = 1;
+-                        }
+-                        tx_i = tx_i + 1;
+-                    }
+-                    ty_i = ty_i + 1;
+-                }
+-            }
+-            if d_hit_ok != 0 {
++            let clear_dst = scratch_point_collides(nx_w, ny_w, nz_w) == 0;
++            if clear_dst || (st.shrink_any != 0 && st.ring_cd_ms <= 0) {
+                 var cseed: u64 = top_seed;
+                 var cbio: i32 = top_bio;
+                 var cblk: u8 = tblk;
+@@ -3218,9 +3243,22 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z:
+                     wd = wd + 1;
+                 }
+                 load_current_chunk();
+-                st.px = d_ax;
+-                st.py = d_ay;
+-                st.pz = d_az;
++                if clear_dst {
++                    st.px = nx_w;
++                    st.py = ny_w;
++                    st.pz = nz_w;
++                } else {
++                    var sx: f64 = 8.0;
++                    var sy: f64 = 8.0;
++                    var sz: f64 = 8.0;
++                    find_clear_air_pos(nx_w, ny_w, nz_w, sx, sy, sz);
++                    st.px = sx;
++                    st.py = sy;
++                    st.pz = sz;
++                    st.ring_cd_ms = 180;
++                    set_status_msg("ShrinkAny passed through solid wall!", 1400);
++                }
++                settle_post_cross_clearance(axis);
+                 return 1;
+             }
+         }
+@@ -3234,7 +3272,7 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z:
+ 
+ fn move_player_vec(dx: f64, dy: f64, dz: f64) {
+     let max_d = fmax(fabs(dx), fmax(fabs(dy), fabs(dz)));
+-    let n_steps = clamp_i(((max_d / 0.18) as! i32) + 1, 1, 6);
++    let n_steps = clamp_i(((max_d / 0.18) as! i32) + 1, 1, 32);
+     let sx = dx / (n_steps as f64);
+     let sy = dy / (n_steps as f64);
+     let sz = dz / (n_steps as f64);
+@@ -3249,7 +3287,8 @@ fn move_player_vec(dx: f64, dy: f64, dz: f64) {
+         if can_cross != 0 && (nx < 0.0 || nx >= 16.0) {
+             let sdir: i32 = if nx < 0.0 { -1 } else { 1 };
+             if step_air_single_axis(0, sdir, nx, st.py, st.pz) != 0 { return; }
+-            st.px = fclamp(st.px, 0.25, 15.75);
++            let clx = fclamp(st.px, 0.25, 15.75);
++            if point_collides(clx, st.py, st.pz) == 0 { st.px = clx; }
+             st.vx = 0.0;
+         } else if point_collides(nx, st.py, st.pz) == 0 {
+             st.px = nx;
+@@ -3262,7 +3301,8 @@ fn move_player_vec(dx: f64, dy: f64, dz: f64) {
+         if can_cross != 0 && (ny < 0.0 || ny >= 16.0) {
+             let sdir: i32 = if ny < 0.0 { -1 } else { 1 };
+             if step_air_single_axis(1, sdir, st.px, ny, st.pz) != 0 { return; }
+-            st.py = fclamp(st.py, 0.25, 15.75);
++            let cly = fclamp(st.py, 0.25, 15.75);
++            if point_collides(st.px, cly, st.pz) == 0 { st.py = cly; }
+             st.vy = 0.0;
+         } else if point_collides(st.px, ny, st.pz) == 0 {
+             st.py = ny;
+@@ -3275,7 +3315,8 @@ fn move_player_vec(dx: f64, dy: f64, dz: f64) {
+         if can_cross != 0 && (nz < 0.0 || nz >= 16.0) {
+             let sdir: i32 = if nz < 0.0 { -1 } else { 1 };
+             if step_air_single_axis(2, sdir, st.px, st.py, nz) != 0 { return; }
+-            st.pz = fclamp(st.pz, 0.25, 15.75);
++            let clz = fclamp(st.pz, 0.25, 15.75);
++            if point_collides(st.px, st.py, clz) == 0 { st.pz = clz; }
+             st.vz = 0.0;
+         } else if point_collides(st.px, st.py, nz) == 0 {
+             st.pz = nz;
+diff --git a/src/fbw_mobile.goose b/src/fbw_mobile.goose
+index e9e4a24..96ae365 100644
+--- a/src/fbw_mobile.goose
++++ b/src/fbw_mobile.goose
+@@ -388,24 +388,46 @@ fn l1_blk_at(x: i32, y: i32, z: i32) -> u8 {
+     return st.parent_blocks[(y << 8) | (z << 4) | x];
+ }
+ 
++fn is_l1_covered_by_neighbor(x: i32, y: i32, z: i32, hx: i32, hy: i32, hz: i32) -> i32 {
++    let st = core();
++    let dx = x - hx;
++    let dy = y - hy;
++    let dz = z - hz;
++    var nb: i32 = 0;
++    while nb < MAX_NEIGHBORS {
++        if st.neighbor_valid[nb] != 0 &&
++           st.neighbor_dx[nb] == dx && st.neighbor_dy[nb] == dy && st.neighbor_dz[nb] == dz {
++            return 1;
++        }
++        nb = nb + 1;
++    }
++    return 0;
++}
++
+ fn layer1_block_exposed(x: i32, y: i32, z: i32, hx: i32, hy: i32, hz: i32) -> i32 {
+     if x < 15 {
+-        if l1_blk_at(x + 1, y, z) == BLK_AIR || (x + 1 == hx && y == hy && z == hz) { return 2; }
++        if l1_blk_at(x + 1, y, z) == BLK_AIR || (x + 1 == hx && y == hy && z == hz) ||
++           is_l1_covered_by_neighbor(x + 1, y, z, hx, hy, hz) != 0 { return 2; }
+     }
+     if x > 0 {
+-        if l1_blk_at(x - 1, y, z) == BLK_AIR || (x - 1 == hx && y == hy && z == hz) { return 2; }
++        if l1_blk_at(x - 1, y, z) == BLK_AIR || (x - 1 == hx && y == hy && z == hz) ||
++           is_l1_covered_by_neighbor(x - 1, y, z, hx, hy, hz) != 0 { return 2; }
+     }
+     if y < 15 {
+-        if l1_blk_at(x, y + 1, z) == BLK_AIR || (x == hx && y + 1 == hy && z == hz) { return 2; }
++        if l1_blk_at(x, y + 1, z) == BLK_AIR || (x == hx && y + 1 == hy && z == hz) ||
++           is_l1_covered_by_neighbor(x, y + 1, z, hx, hy, hz) != 0 { return 2; }
+     }
+     if y > 0 {
+-        if l1_blk_at(x, y - 1, z) == BLK_AIR || (x == hx && y - 1 == hy && z == hz) { return 2; }
++        if l1_blk_at(x, y - 1, z) == BLK_AIR || (x == hx && y - 1 == hy && z == hz) ||
++           is_l1_covered_by_neighbor(x, y - 1, z, hx, hy, hz) != 0 { return 2; }
+     }
+     if z < 15 {
+-        if l1_blk_at(x, y, z + 1) == BLK_AIR || (x == hx && y == hy && z + 1 == hz) { return 2; }
++        if l1_blk_at(x, y, z + 1) == BLK_AIR || (x == hx && y == hy && z + 1 == hz) ||
++           is_l1_covered_by_neighbor(x, y, z + 1, hx, hy, hz) != 0 { return 2; }
+     }
+     if z > 0 {
+-        if l1_blk_at(x, y, z - 1) == BLK_AIR || (x == hx && y == hy && z - 1 == hz) { return 2; }
++        if l1_blk_at(x, y, z - 1) == BLK_AIR || (x == hx && y == hy && z - 1 == hz) ||
++           is_l1_covered_by_neighbor(x, y, z - 1, hx, hy, hz) != 0 { return 2; }
+     }
+     if x == 0 || x == 15 || y == 0 || y == 15 || z == 0 || z == 15 { return 1; }
+     return 0;
+@@ -504,6 +526,7 @@ fn sync_inward_to_gl() {
+                 let nblk = l1_blk_at(ox, oy, oz);
+                 let nseed = resolve_child_frame_seed(l1_seed, l1_depth, ox, oy, oz, nblk);
+                 if l1_v == 0 || (ox == l1_hx && oy == l1_hy && oz == l1_hz) ||
++                   is_l1_covered_by_neighbor(ox, oy, oz, l1_hx, l1_hy, l1_hz) != 0 ||
+                    nblk == BLK_AIR || is_block_subdivisible(nblk) == 0 ||
+                    nblk != g_mob.l1_inw_blk[rs] || nseed != g_mob.l1_inw_seed[rs] {
+                     let oidx = (oy << 8) | (oz << 4) | ox;
+@@ -619,7 +642,8 @@ fn sync_inward_to_gl() {
+             while z < 16 {
+                 var x: i32 = 0;
+                 while x < 16 {
+-                    if !(x == hx && y == hy && z == hz) {
++                    if !(x == hx && y == hy && z == hz) &&
++                       is_l1_covered_by_neighbor(x, y, z, hx, hy, hz) == 0 {
+                         let blk = l1_blk_at(x, y, z);
+                         if blk != BLK_AIR && is_block_subdivisible(blk) != 0 {
+                             let exp = layer1_block_exposed(x, y, z, hx, hy, hz);

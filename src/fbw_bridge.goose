@@ -8,6 +8,15 @@ extern fn fbw_set_orientation(landscape: i32);
 extern fn fbw_now_ms() -> i32;
 extern fn fbw_sound_fx(kind: i32);
 
+extern fn fbw_save_begin() -> i32;
+extern fn fbw_save_push_i32(v: i32);
+extern fn fbw_save_commit() -> i32;
+extern fn fbw_load_begin() -> i32;
+extern fn fbw_load_pop_i32() -> i32;
+extern fn fbw_load_end();
+extern fn fbw_save_delete() -> i32;
+extern fn fbw_save_exists() -> i32;
+
 extern fn fbw_gl_set_viewport(w: i32, h: i32, depth: i32, biome: i32, flash_rgb: i32, flash_ms: i32);
 extern fn fbw_gl_set_camera(px_mm: i32, py_mm: i32, pz_mm: i32,
                               yaw_mrad: i32, pitch_mrad: i32, roll_mrad: i32, anim_ms: i32);

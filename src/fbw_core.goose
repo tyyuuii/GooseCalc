@@ -35,6 +35,7 @@ const SCREEN_INFO_F5: i32 = 10;
 const SCREEN_TOME: i32 = 11;
 const SCREEN_VICTORY: i32 = 12;
 const SCREEN_UPGRADE: i32 = 13;
+const SCREEN_EDIT_UI: i32 = 14;
 
 // Biomes (Authentic Xar Progression)
 const BIOME_SPACE: i32 = 0;         // Outer Space Level 0 (depth < 0)
@@ -404,6 +405,7 @@ root struct fbw_state {
     anim_ms: i64,
     level: i32,          // player level (max 500); grants upgrades on level-up
     xp: i32,             // experience toward next level
+    autosave_dirty: i32, // set when progress/world state changes cleanly
 }
 
 var st: fbw_state;
@@ -677,6 +679,7 @@ fn award_trophy(bit: i32, msg: const u8[:]) {
     st.trophy_mask = st.trophy_mask | bit;
     st.trophies = st.trophies + 1;
     st.score_xp = st.score_xp + 250;
+    st.autosave_dirty = 1;
     queue_sfx(SFX_PICKUP);
     set_status_msg(msg, 3200);
 }
@@ -697,6 +700,7 @@ fn is_entity_cleared(seed: u64, slot_id: i32) -> i32 {
 fn mark_entity_cleared(seed: u64, slot_id: i32) {
     if slot_id < 0 || slot_id >= 32 { return; }
     let bit: u32 = (1 as! u32) << (slot_id as! u32);
+    st.autosave_dirty = 1;
     var i: i32 = 0;
     while i < MAX_CLEARED_CHUNKS {
         if st.cleared_seeds[i] == seed {
@@ -799,6 +803,7 @@ fn compute_air_depth(d_in: i32) -> i32 {
 fn record_block_delta(bx: i32, by: i32, bz: i32, b: u8) {
     invalidate_inward_cache();
     st.chunk_rev = st.chunk_rev + 1;
+    st.autosave_dirty = 1;
     let seed = cur_seed();
     var i: i32 = 0;
     while i < MAX_DELTAS {
@@ -1152,6 +1157,7 @@ fn award_xp(amount: i32) {
         refresh_derived();
         st.hp = st.max_hp;
         st.shields = st.max_shields;
+        st.autosave_dirty = 1;
         queue_sfx(SFX_PICKUP);
         set_status_msg("LEVEL UP! +1 Dmg (all weapons), +20 MaxHP, +1 Regen", 2400);
     }
@@ -3083,6 +3089,7 @@ fn shrink_into_ex(bx: i32, by: i32, bz: i32, target_blk: u8, forced_biome: i32, 
     st.ring_cd_ms = 260;
     st.flash_ms = 200;
     st.flash_rgb = pack_rgb(40, 235, 130);
+    st.autosave_dirty = 1;
     queue_sfx(SFX_WARP);
     if target_blk == BLK_AIR {
         set_status_msg(if steps >= 2 { "Shrank 256x in-place (same world)!" } else { "Shrank 16x in-place (same world)!" }, 1600);
@@ -3209,6 +3216,7 @@ fn grow_out_axis(exit_x: f64, exit_y: f64, exit_z: f64) {
     st.ring_cd_ms = 260;
     st.flash_ms = 200;
     st.flash_rgb = pack_rgb(245, 70, 70);
+    st.autosave_dirty = 1;
     queue_sfx(SFX_WARP);
     set_status_msg("Grew 16x outward in-place!", 1600);
 }
@@ -3390,6 +3398,7 @@ fn init_new_game() {
     st.dps_val = 0;
     st.dps_accum = 0;
     st.dps_timer_ms = 0;
+    st.autosave_dirty = 0;
 
     load_current_chunk();
     if st.genesis_mode != 0 {
@@ -3432,6 +3441,7 @@ fn respawn_at_tutorial_preserving_progress() {
     st.ring_cd_ms = 400;
     st.flash_ms = 320;
     st.flash_rgb = pack_rgb(220, 40, 60);
+    st.autosave_dirty = 1;
     queue_sfx(SFX_HURT);
     set_status_msg("Hull destroyed! Respawned: -30 Gold, armor & ammo lost (plasma refilled).", 3600);
 }
@@ -4054,6 +4064,7 @@ fn damage_entity(idx: i32, dmg: i32, stun_ms: i32) {
         if k == ENT_SINGULARITY {
             st.singularity_defeated = 1;
             st.quasar_drive = 1;
+            st.autosave_dirty = 1;
             add_gold(500);
             let _ = spawn_entity(ENT_ARMOR, ex + 0.4, ey, ez, 3, -1, 0);   // gold armor (2B)
             let _ = spawn_entity(ENT_HEALTH, ex - 0.4, ey, ez, 4, -1, 0);  // health to 2B
@@ -5001,6 +5012,7 @@ fn drop_marker(is_long: i32) {
     st.markers[slot].neg_off = neg_off;
     st.markers[slot].neg_cnt = neg_cnt;
     st.active_marker = slot;
+    st.autosave_dirty = 1;
     queue_sfx(SFX_PICKUP);
     if is_long != 0 {
         set_status_msg("Long Tracking Marker placed! View & warp via [INFO/F4].", 1800);
@@ -5029,6 +5041,7 @@ fn warp_to_marker(slot: i32) -> i32 {
     st.vx = 0.0; st.vy = 0.0; st.vz = 0.0;
     st.flash_ms = 240;
     st.flash_rgb = pack_rgb(74, 222, 128);
+    st.autosave_dirty = 1;
     queue_sfx(SFX_WARP);
     set_status_msg("Warped to Marker!", 1600);
     return 1;
@@ -5288,7 +5301,9 @@ fn handle_buy_action(choice: i32) {
         set_status_msg("200% Armor!", 1400);
     } else {
         set_status_msg("Not enough gold!", 1000);
+        return;
     }
+    st.autosave_dirty = 1;
 }
 
 fn handle_sell_action(choice: i32) {
@@ -5326,7 +5341,9 @@ fn handle_sell_action(choice: i32) {
         set_status_msg("Sold 1 Nuke for +80 Gold!", 1400);
     } else {
         set_status_msg("Not enough surplus to sell!", 1000);
+        return;
     }
+    st.autosave_dirty = 1;
 }
 
 fn handle_black_market_action(choice: i32) {
@@ -5348,7 +5365,9 @@ fn handle_black_market_action(choice: i32) {
         set_status_msg("Black Market: 2 Nukes!", 1400);
     } else {
         set_status_msg("Not enough gold!", 1000);
+        return;
     }
+    st.autosave_dirty = 1;
 }
 
 // Upgrade Station (manual 8.6): the main gold sink. Buying a weapon's damage
@@ -5417,7 +5436,9 @@ fn handle_upgrade_action(choice: i32) {
         set_status_msg("Health regen upgraded! (Shield & HP regen faster)", 1400);
     } else {
         set_status_msg("Not enough gold!", 1000);
+        return;
     }
+    st.autosave_dirty = 1;
 }
 
 fn step_simulation(dt_ms: i32) {
