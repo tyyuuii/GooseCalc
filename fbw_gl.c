@@ -57,8 +57,9 @@
 #define BLK_UPG_ROF       40
 #define BLK_UPG_AMMO      41
 #define BLK_UPG_SPEED     42
-#define BLK_KEY_BLOCK     43
-#define BLK_UPG_WEP       44
+#define BLK_KEY_BLOCK       43
+#define BLK_UPG_WEP         44
+#define BLK_UPGRADE_STATION 45
 
 // Entity kinds matching fbw_core.goose
 #define ENT_RING_GREEN    1
@@ -243,20 +244,22 @@ static const char *SKY_FS =
     "  vec3 dir = normalize(u_fwd + v_ndc.x * u_aspect * 0.74 * u_right + v_ndc.y * 0.74 * u_up);\n"
     "  float h_band = clamp(dir.y * 0.78 + 0.36, 0.0, 1.0);\n"
     "  vec3 col = mix(u_bot, u_top, pow(h_band, 0.85));\n"
-    "  float horizon_glow = exp(-abs(dir.y) * 5.5) * 0.16;\n"
+    "  float horizon_glow = exp(-abs(dir.y) * 4.5) * 0.22;\n"
     "  col += u_bot * horizon_glow;\n"
     "  if (u_star > 0.5) {\n"
     "    vec3 cell = floor(dir * 96.0);\n"
     "    float h = hash31(cell);\n"
-    "    if (h > 0.992) {\n"
+    "    if (h > 0.990) {\n"
     "      float tw = 0.65 + 0.35 * sin(u_time * 3.0 + h * 90.0);\n"
-    "      col += vec3(0.86, 0.94, 1.0) * tw * u_star;\n"
+    "      col += vec3(0.88, 0.95, 1.0) * tw * u_star;\n"
     "    }\n"
-    "  } else if (dir.y > 0.04) {\n"
-    "    vec2 c_uv = dir.xz / max(dir.y + 0.25, 0.25) * 1.4 + vec2(u_time * 0.015, 0.0);\n"
-    "    float cn = hash31(vec3(floor(c_uv * 2.5), 1.0));\n"
-    "    if (cn > 0.72) {\n"
-    "      col = mix(col, vec3(0.96, 0.98, 1.0), 0.18 * smoothstep(0.04, 0.35, dir.y));\n"
+    "    float neb = hash31(floor(dir * 5.0));\n"
+    "    col += vec3(0.08, 0.04, 0.14) * smoothstep(0.60, 0.98, neb) * u_star;\n"
+    "  } else if (dir.y > 0.02) {\n"
+    "    vec2 c_uv = dir.xz / max(dir.y + 0.30, 0.30) * 1.3 + vec2(u_time * 0.012, 0.0);\n"
+    "    float cn = hash31(vec3(floor(c_uv * 2.2), 1.0));\n"
+    "    if (cn > 0.68) {\n"
+    "      col = mix(col, vec3(0.98, 0.99, 1.0), 0.26 * smoothstep(0.02, 0.32, dir.y));\n"
     "    }\n"
     "  }\n"
     "  gl_FragColor = vec4(col, 1.0);\n"
@@ -310,61 +313,67 @@ static const char *WORLD_FS =
     "  float d_cen = max(abs(uv.x - 0.5), abs(uv.y - 0.5)) * 2.0;\n"
     "  float outline_w = (tier > 1.5) ? 0.025 : ((tier > 0.5) ? 0.036 : 0.048);\n"
     "  if (style < 0.5) {\n"
-    "    // Stone / Tutorial / Sand / Dirt crisp Steam FBW voxel outline + subtle stone grain\n"
-    "    float grain = 0.92 + 0.14 * h21(floor(uv * 12.0));\n"
+    "    // Tutorial Walls / Stone / Dirt: crisp Steam FBW beveled tile + pixel grid\n"
+    "    float grain = 0.93 + 0.12 * h21(floor(uv * 8.0));\n"
     "    base *= grain;\n"
-    "    if (e < outline_w) base *= 0.22;\n"
-    "    else if (e < outline_w + 0.035) base *= 1.08;\n"
+    "    if (e < outline_w) base *= 0.24;\n"
+    "    else if (e < outline_w + 0.045) base = mix(base, vec3(1.0), 0.18);\n"
     "  } else if (style < 1.5) {\n"
-    "    // Black Cube / Menger Sponge: crisp grey stone trusses + diagonal X-brace + hollow cavity\n"
+    "    // Black Cube / Core Gate / Yellow Core: nested fractal square Menger face\n"
     "    float diag = min(abs(uv.x - uv.y), abs(uv.x + uv.y - 1.0));\n"
     "    if (e < 0.055) {\n"
-    "      base = vec3(0.08, 0.09, 0.12);\n"
-    "    } else if (d_cen > 0.58 || diag < 0.065) {\n"
-    "      base *= (0.94 + 0.12 * cell_n);\n"
+    "      base = vec3(0.06, 0.07, 0.10);\n"
+    "    } else if (d_cen > 0.64 || (d_cen > 0.24 && d_cen < 0.36) || diag < 0.045) {\n"
+    "      base *= (0.95 + 0.10 * cell_n);\n"
+    "    } else if (d_cen <= 0.24) {\n"
+    "      base = mix(base * 0.22, vec3(0.24, 0.84, 1.0), 0.35 + 0.15 * sin(u_time * 3.0));\n"
     "    } else {\n"
-    "      base = mix(base * 0.24, vec3(0.18, 0.72, 0.92), step(0.84, fract(d_cen * 3.0 - u_time * 0.25)) * 0.45);\n"
+    "      base *= 0.32;\n"
     "    }\n"
-    "    light = max(light, 0.92);\n"
+    "    light = max(light, 0.94);\n"
     "  } else if (style < 2.5) {\n"
-    "    // Stations / Upgrades / Tome / Spawner: crisp frame + glowing animated center emblem\n"
-    "    float pulse = 0.88 + 0.16 * sin(u_time * 4.0);\n"
-    "    float icon = step(0.18, d_cen) * (1.0 - step(0.46, d_cen));\n"
-    "    if (e < 0.065) base = vec3(0.08, 0.10, 0.14);\n"
-    "    else if (e < 0.105) base = mix(base, vec3(1.0), 0.45);\n"
-    "    else if (icon > 0.5) base = mix(base, vec3(1.0, 0.96, 0.72), 0.55);\n"
-    "    else base *= 0.85;\n"
+    "    // Stations / Upgrades / Tome / Spawner: crisp frame + glowing animated emblem\n"
+    "    float pulse = 0.90 + 0.12 * sin(u_time * 4.0);\n"
+    "    float cross_bar = max(step(abs(uv.x - 0.5), 0.11) * step(abs(uv.y - 0.5), 0.28),\n"
+    "                          step(abs(uv.y - 0.5), 0.11) * step(abs(uv.x - 0.5), 0.28));\n"
+    "    if (e < 0.065) base = vec3(0.06, 0.08, 0.12);\n"
+    "    else if (e < 0.11) base = mix(base, vec3(1.0), 0.42);\n"
+    "    else if (cross_bar > 0.5) base = mix(base, vec3(1.0, 0.98, 0.80), 0.65);\n"
+    "    else base *= 0.80;\n"
     "    base *= pulse;\n"
     "    light = max(light, 0.98);\n"
     "  } else if (style < 3.5) {\n"
     "    // Ice & Glass crystal prism\n"
-    "    float sheen = smoothstep(0.62, 0.98, fract(uv.x * 0.75 + uv.y * 0.85));\n"
-    "    base = mix(base, vec3(0.92, 0.99, 1.0), sheen * 0.45);\n"
-    "    if (e < outline_w) base *= 0.45;\n"
+    "    float sheen = smoothstep(0.60, 0.98, fract(uv.x * 0.75 + uv.y * 0.85));\n"
+    "    base = mix(base, vec3(0.94, 0.99, 1.0), sheen * 0.48);\n"
+    "    if (e < outline_w) base *= 0.42;\n"
     "  } else if (style < 4.5) {\n"
-    "    // Grass & Leaves: vibrant foliage speckles + crisp voxel edge\n"
-    "    float dapple = 0.82 + 0.32 * h21(floor(uv * 10.0));\n"
-    "    base *= dapple;\n"
-    "    if (e < outline_w) base *= 0.32;\n"
+    "    // Grass & Ying Leaves: crisp pixel-cluster foliage + subtle highlight\n"
+    "    float n8 = h21(floor(uv * 8.0));\n"
+    "    base *= (0.86 + 0.26 * n8);\n"
+    "    if (n8 > 0.91) base = mix(base, vec3(0.85, 1.0, 0.58), 0.45);\n"
+    "    if (e < outline_w) base *= 0.30;\n"
     "  } else if (style < 5.5) {\n"
     "    // Wood bark grain\n"
-    "    float bark = 0.84 + 0.24 * sin(uv.x * 28.0 + cell_n * 3.1);\n"
+    "    float bark = 0.84 + 0.22 * sin(uv.x * 26.0 + cell_n * 3.1);\n"
     "    base *= bark;\n"
     "    if (e < outline_w) base *= 0.28;\n"
     "  } else if (style < 6.5) {\n"
-    "    // Alpha Cube / White Flower / Mylantis circuit lattice\n"
+    "    // Alpha Cube / White Flower / Mylantis geometric tile\n"
     "    float trace = step(0.84, max(puv.x, puv.y));\n"
-    "    if (e < 0.055) base *= 0.24;\n"
-    "    else if (trace > 0.5) base *= 1.24;\n"
-    "    else base *= (0.88 + 0.14 * cell_n);\n"
+    "    float center_sq = step(d_cen, 0.30);\n"
+    "    if (e < 0.055) base *= 0.26;\n"
+    "    else if (center_sq > 0.5 && base.r > 0.85 && base.g > 0.85) base = vec3(1.0, 0.88, 0.28);\n"
+    "    else if (trace > 0.5) base *= 1.20;\n"
+    "    else base *= (0.90 + 0.12 * cell_n);\n"
     "  } else if (style < 7.5) {\n"
-    "    // Yellow Flower / Pollen / Desert World: striated radiant bands\n"
-    "    float strata = 0.88 + 0.20 * sin(uv.y * 18.0 + sin(uv.x * 6.0));\n"
+    "    // Yellow Flower / Pollen / Desert World: crisp stepped pixel strata\n"
+    "    float strata = 0.90 + 0.16 * sin(uv.y * 18.0 + sin(uv.x * 6.0));\n"
     "    base *= strata;\n"
     "    if (e < outline_w) base *= 0.28;\n"
     "  } else if (style < 8.5) {\n"
     "    // Gold Ore / Crate / Vault Door: metallic rivet & ore flecks\n"
-    "    float fleck = step(0.78, cell_n);\n"
+    "    float fleck = step(0.76, cell_n);\n"
     "    if (e < 0.065) base *= 0.25;\n"
     "    else if (fleck > 0.5) base = mix(base, vec3(1.0, 0.94, 0.55), 0.55);\n"
     "  } else if (style < 9.5) {\n"
@@ -561,9 +570,10 @@ static void block_color(uint8_t blk, uint8_t *r, uint8_t *g, uint8_t *b, float *
         case BLK_UPG_ROF:       *r = 252; *g = 178; *b = 42;  *style = 2.0f; break;
         case BLK_UPG_AMMO:      *r = 176; *g = 92;  *b = 248; *style = 2.0f; break;
         case BLK_UPG_SPEED:     *r = 56;  *g = 236; *b = 216; *style = 2.0f; break;
-        case BLK_KEY_BLOCK:     *r = 255; *g = 228; *b = 72;  *style = 2.0f; break;
-        case BLK_UPG_WEP:       *r = 48;  *g = 236; *b = 152; *style = 2.0f; break;
-        default:                *r = 128; *g = 128; *b = 140; *style = 0.0f; break;
+        case BLK_KEY_BLOCK:       *r = 255; *g = 228; *b = 72;  *style = 2.0f; break;
+        case BLK_UPG_WEP:         *r = 48;  *g = 236; *b = 152; *style = 2.0f; break;
+        case BLK_UPGRADE_STATION: *r = 255; *g = 140; *b = 40;  *style = 2.0f; break;
+        default:                  *r = 128; *g = 128; *b = 140; *style = 0.0f; break;
     }
 }
 
@@ -2050,8 +2060,10 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
     build_mvp_band(mvp, aspect, g_cam_x, g_cam_y, g_cam_z, 0.08f, 280.0f);
     glUniformMatrix4fv(g_u_mvp, 1, GL_FALSE, mvp);
     glUniform3f(g_u_cam, g_cam_x, g_cam_y, g_cam_z);
-    glUniform2f(g_u_fog_params, 32.0f, 260.0f);
-    glUniform1f(g_u_fog_max, 0.64f);
+    float fog_start = (g_biome == 1 || g_biome == 2 || g_biome == 3) ? 44.0f : 32.0f;
+    float fog_max = (g_biome == 1 || g_biome == 2 || g_biome == 3) ? 0.46f : 0.62f;
+    glUniform2f(g_u_fog_params, fog_start, 280.0f);
+    glUniform1f(g_u_fog_max, fog_max);
 
     if (g_band1_cnt > 0) {
         draw_vert_buffer(g_vbo_band1, g_band1_cnt);
