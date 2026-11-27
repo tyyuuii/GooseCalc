@@ -230,7 +230,7 @@ static GLuint g_vbo_dyn = 0;
 // Uniform locations
 static GLint g_u_sky_top = -1, g_u_sky_bot = -1, g_u_sky_star = -1, g_u_sky_time = -1;
 static GLint g_u_sky_fwd = -1, g_u_sky_right = -1, g_u_sky_up = -1, g_u_sky_aspect = -1;
-static GLint g_u_sky_sundir = -1, g_u_sky_suncol = -1;
+static GLint g_u_sky_sundir = -1, g_u_sky_suncol = -1, g_u_sky_fov = -1;
 
 static GLint g_u_mvp = -1, g_u_cam = -1, g_u_fog_col = -1, g_u_fog_params = -1;
 static GLint g_u_anim = -1, g_u_flash = -1, g_u_fog_max = -1;
@@ -260,6 +260,7 @@ static const char *SKY_FS =
     "uniform vec3 u_right;\n"
     "uniform vec3 u_up;\n"
     "uniform float u_aspect;\n"
+    "uniform float u_fov;\n"
     "uniform vec3 u_sundir;\n"
     "uniform vec3 u_suncol;\n"
     "float hash31(vec3 p) {\n"
@@ -268,7 +269,7 @@ static const char *SKY_FS =
     "  return fract((p.x + p.y) * p.z);\n"
     "}\n"
     "void main() {\n"
-    "  vec3 dir = normalize(u_fwd + v_ndc.x * u_aspect * 0.74 * u_right + v_ndc.y * 0.74 * u_up);\n"
+    "  vec3 dir = normalize(u_fwd + v_ndc.x * u_aspect * u_fov * u_right + v_ndc.y * u_fov * u_up);\n"
     "  float h_band = clamp(dir.y * 0.78 + 0.36, 0.0, 1.0);\n"
     "  vec3 col = mix(u_bot, u_top, h_band * (0.85 + 0.15 * h_band));\n"
     "  float horizon_glow = exp(-abs(dir.y) * 4.5) * 0.25;\n"
@@ -323,11 +324,13 @@ static const char *WORLD_VS =
     "#endif\n"
     "varying mediump vec4 v_meta;\n"
     "varying lowp vec4 v_col;\n"
+    "varying mediump vec2 v_screen_p;\n"
     "void main() {\n"
     "  v_pos = a_pos;\n"
     "  v_meta = a_meta;\n"
     "  v_col = a_col;\n"
     "  vec4 clip = u_mvp * vec4(a_pos, 1.0);\n"
+    "  v_screen_p = clip.xy / max(abs(clip.w), 0.001);\n"
     "  gl_Position = clip;\n"
     "}\n";
 
@@ -347,6 +350,7 @@ static const char *WORLD_FS =
     "#endif\n"
     "varying mediump vec4 v_meta;\n"
     "varying lowp vec4 v_col;\n"
+    "varying mediump vec2 v_screen_p;\n"
     "uniform mediump vec3 u_fog_col;\n"
     "uniform highp vec2 u_fog_params;\n"
     "uniform mediump float u_fog_max;\n"
@@ -528,7 +532,10 @@ static const char *WORLD_FS =
     "  mediump float s_scat = max(dot(V, u_sundir), 0.0);\n"
     "  mediump vec3 fog_tint = mix(u_fog_col, u_suncol, s_scat * s_scat * 0.35);\n"
     "  mediump vec3 out_col = mix(lit, fog_tint, fog_t);\n"
-    "  out_col = mix(out_col, u_flash.rgb, u_flash.a);\n"
+    "  mediump float r_sq = dot(v_screen_p, v_screen_p);\n"
+    "  mediump float warp_vignette = smoothstep(0.12, 1.40, r_sq);\n"
+    "  mediump float flash_intensity = u_flash.a * (0.18 + 0.82 * warp_vignette);\n"
+    "  out_col = mix(out_col, u_flash.rgb, flash_intensity);\n"
     "  gl_FragColor = vec4(out_col, v_col.a);\n"
     "}\n";
 
@@ -590,6 +597,7 @@ static void init_gl_resources(void) {
     g_u_sky_aspect = glGetUniformLocation(g_prog_sky, "u_aspect");
     g_u_sky_sundir = glGetUniformLocation(g_prog_sky, "u_sundir");
     g_u_sky_suncol = glGetUniformLocation(g_prog_sky, "u_suncol");
+    g_u_sky_fov    = glGetUniformLocation(g_prog_sky, "u_fov");
 
     g_u_mvp        = glGetUniformLocation(g_prog_world, "u_mvp");
     g_u_cam        = glGetUniformLocation(g_prog_world, "u_cam");
@@ -2095,7 +2103,7 @@ static void biome_sky_colors(int biome, float *tr, float *tg, float *tb,
 }
 
 static void build_mvp_band(float *m, float aspect, float cam_x, float cam_y, float cam_z,
-                           float znear, float zfar) {
+                           float znear, float zfar, float fov_scale) {
     float cp = cosf(g_pitch), sp = sinf(g_pitch);
     float cy = cosf(g_yaw),   sy = sinf(g_yaw);
     float cr = cosf(g_roll),  sr = sinf(g_roll);
@@ -2109,7 +2117,6 @@ static void build_mvp_band(float *m, float aspect, float cam_x, float cam_y, flo
     float uy = uy0 * cr;
     float uz = uz0 * cr - rz0 * sr;
 
-    const float fov_scale = 0.74f;
     float f = 1.0f / fov_scale;
     float p00 = f / aspect;
     float p11 = f;
@@ -2471,6 +2478,23 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
 
+    float fov_scale = 0.74f;
+    if (g_flash_ms > 0) {
+        float t = (float)g_flash_ms / 380.0f;
+        if (t > 1.0f) t = 1.0f;
+        float hermite = t * t * (3.0f - 2.0f * t);
+        float fl_r = (float)((g_flash_rgb >> 16) & 0xff);
+        float fl_g = (float)((g_flash_rgb >> 8) & 0xff);
+        float fl_b = (float)(g_flash_rgb & 0xff);
+        if (fl_g > fl_r || (fl_r > 150.0f && fl_b > 150.0f)) {
+            // Shrink: dynamic wide-angle tunnel plunge (dolly zoom vertigo)
+            fov_scale = 0.74f * (1.0f + 0.32f * hermite);
+        } else if (fl_r > fl_g) {
+            // Grow: dynamic telephoto compression (cosmic scale perspective)
+            fov_scale = 0.74f * (1.0f - 0.24f * hermite);
+        }
+    }
+
     glUseProgram(g_prog_sky);
     glUniform3f(g_u_sky_top, tr, tg, tb);
     glUniform3f(g_u_sky_bot, br, bg, bb);
@@ -2480,6 +2504,7 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
     glUniform3f(g_u_sky_right, rx, ry, rz);
     glUniform3f(g_u_sky_up, ux, uy, uz);
     glUniform1f(g_u_sky_aspect, aspect);
+    glUniform1f(g_u_sky_fov, fov_scale);
     glUniform3f(g_u_sky_sundir, sun_dir[0], sun_dir[1], sun_dir[2]);
     glUniform3f(g_u_sky_suncol, sun_col[0], sun_col[1], sun_col[2]);
 
@@ -2529,7 +2554,7 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
         float c3x = g_cam_x * (1.0f / 4096.0f);
         float c3y = g_cam_y * (1.0f / 4096.0f);
         float c3z = g_cam_z * (1.0f / 4096.0f);
-        build_mvp_band(mvp, aspect, c3x, c3y, c3z, 0.25f, 8192.0f);
+        build_mvp_band(mvp, aspect, c3x, c3y, c3z, 0.25f, 8192.0f, fov_scale);
         glUniformMatrix4fv(g_u_mvp, 1, GL_FALSE, mvp);
         glUniform3f(g_u_cam, c3x, c3y, c3z);
         glUniform2f(g_u_fog_params, 260.0f, 3800.0f);
@@ -2543,7 +2568,7 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
         float c2x = g_cam_x * 0.0625f;
         float c2y = g_cam_y * 0.0625f;
         float c2z = g_cam_z * 0.0625f;
-        build_mvp_band(mvp, aspect, c2x, c2y, c2z, 0.25f, 8192.0f);
+        build_mvp_band(mvp, aspect, c2x, c2y, c2z, 0.25f, 8192.0f, fov_scale);
         glUniformMatrix4fv(g_u_mvp, 1, GL_FALSE, mvp);
         glUniform3f(g_u_cam, c2x, c2y, c2z);
         glUniform2f(g_u_fog_params, 160.0f, 3200.0f);
@@ -2553,7 +2578,7 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
 
     // 4. Band 1: Active 1x + Layer 1 (16x) + Frustum-Culled Neighbors + Inward 1/16x LOD + Dynamic
     glClear(GL_DEPTH_BUFFER_BIT);
-    build_mvp_band(mvp, aspect, g_cam_x, g_cam_y, g_cam_z, 0.10f, 560.0f);
+    build_mvp_band(mvp, aspect, g_cam_x, g_cam_y, g_cam_z, 0.10f, 560.0f, fov_scale);
     extract_frustum_planes(mvp, planes);
     rebuild_dirty_neighbors(planes);
     glUniformMatrix4fv(g_u_mvp, 1, GL_FALSE, mvp);
