@@ -56,6 +56,20 @@
 #define BLK_KEY_BLOCK       43
 #define BLK_UPG_WEP         44
 #define BLK_UPGRADE_STATION 45
+#define BLK_QUICKSAND       46
+#define BLK_SOLAR_PLASMA    47
+#define BLK_LUNAR_REGOLITH  48
+#define BLK_CRYSTAL_CYAN    49
+#define BLK_CRYSTAL_PURPLE  50
+#define BLK_BOOKSHELF       51
+#define BLK_NEON_GRID       52
+#define BLK_EVENT_HORIZON   53
+#define BLK_BETA_TILE       54
+#define BLK_MYLANTIS_RED    55
+#define BLK_OBLIVION_BRICK  56
+#define BLK_ROOT_SOIL       57
+#define BLK_BOTANY_TANK     58
+#define BLK_ARCADE_CAB      59
 
 // Entity kinds matching fbw_core.goose
 #define ENT_RING_GREEN    1
@@ -80,6 +94,26 @@
 #define ENT_FRIEND_K      20
 #define ENT_RING_DANGER   21
 #define ENT_MARKER_BEACON 22
+#define ENT_FLARE         23
+#define ENT_TWEEDLE       24
+#define ENT_GNAT          25
+#define ENT_BABY_SPIDER   26
+#define ENT_LAMPREY       27
+#define ENT_BURLY         28
+#define ENT_BEHOLDER      29
+#define ENT_SLIVER        30
+#define ENT_VULCAN        31
+#define ENT_GROWER        32
+#define ENT_SHRINKER      33
+#define ENT_ROCKET_SPIDER 34
+#define ENT_HYDRA         35
+#define ENT_TON618_BOSS   36
+#define ENT_HEX_SENTRY    37
+#define ENT_ARCADE_DRONE  38
+
+#define IS_ENEMY_KIND(k) (((k) >= ENT_RAT && (k) <= ENT_SINGULARITY) || ((k) >= ENT_TWEEDLE && (k) <= ENT_ARCADE_DRONE))
+#define IS_PICKUP_KIND(k) ((k) >= ENT_GOLD && (k) <= ENT_FRIEND_K)
+#define MAX_LIGHTS 6
 
 // Face IDs encoded in style * 64.0f so fragment shader reconstructs exact normal N
 #define FACE_PY 0.0f
@@ -235,6 +269,16 @@ static GLint g_u_sky_sundir = -1, g_u_sky_suncol = -1;
 static GLint g_u_mvp = -1, g_u_cam = -1, g_u_fog_col = -1, g_u_fog_params = -1;
 static GLint g_u_anim = -1, g_u_flash = -1, g_u_fog_max = -1;
 static GLint g_u_sundir = -1, g_u_suncol = -1;
+static GLint g_u_light_pos = -1, g_u_light_col = -1, g_u_ambient = -1, g_u_grid_on = -1;
+
+typedef struct {
+    float x, y, z, rad;
+    float r, g, b, pad;
+} FbwLight;
+static FbwLight g_lights[MAX_LIGHTS];
+static int g_light_cnt = 0;
+static int g_chunk_grid = 0;
+static int g_dark_caves = 1;
 
 // Strictly GLSL ES 1.00 compatible for rawdrawandroid's ES 2.0 EGL context
 static const char *SKY_VS =
@@ -354,6 +398,10 @@ static const char *WORLD_FS =
     "uniform mediump vec4 u_flash;\n"
     "uniform mediump vec3 u_sundir;\n"
     "uniform mediump vec3 u_suncol;\n"
+    "uniform highp vec4 u_light_pos[6];\n"
+    "uniform mediump vec4 u_light_col[6];\n"
+    "uniform mediump float u_ambient;\n"
+    "uniform mediump float u_grid_on;\n"
     "mediump float h21(mediump vec2 p) {\n"
     "  p = fract(p * vec2(234.34, 435.345));\n"
     "  p += dot(p, p + 34.23);\n"
@@ -498,18 +546,57 @@ static const char *WORLD_FS =
     "    if (e < 0.055) base *= 0.25;\n"
     "    light = max(light, 0.92);\n"
     "    spec_pow = 0.45;\n"
-    "  } else {\n"
+    "  } else if (style < 14.5) {\n"
     "    base = vec3(0.08, 0.24, 0.34);\n"
     "    mediump float row_bar = step(0.55, fract(uv.y * 5.0)) * step(0.14, uv.x) * step(uv.x, 0.86);\n"
     "    if (e < 0.06) base = vec3(0.03, 0.08, 0.12);\n"
     "    else if (row_bar > 0.5) base = vec3(0.32, 0.96, 1.0);\n"
     "    light = max(light, 0.98);\n"
+    "  } else {\n"
+    "    if (base.r > 0.75 && base.b < 0.35) {\n"
+    "      mediump float boil = 0.5 + 0.5 * sin(uv.x * 12.0 + u_anim.x * 3.0) * cos(uv.y * 12.0 - u_anim.x * 2.5);\n"
+    "      base = mix(vec3(0.95, 0.34, 0.05), vec3(1.0, 0.94, 0.52), boil);\n"
+    "      light = 1.05;\n"
+    "    } else {\n"
+    "      mediump vec2 gp = abs(fract(uv * 4.0) - 0.5);\n"
+    "      mediump float gline = step(0.42, max(gp.x, gp.y));\n"
+    "      mediump vec3 edge_c = base;\n"
+    "      base = mix(vec3(0.05, 0.06, 0.14), edge_c * 1.25, max(gline, step(e, 0.08)));\n"
+    "      light = max(light, 0.96);\n"
+    "    }\n"
     "  }\n"
-    "  // Directional sun wrap + warm/cool hemisphere bounce\n"
+    "  if (u_grid_on > 0.5 && tier < 0.5 && dist < 96.0) {\n"
+    "    mediump vec3 cf = fract(v_pos * 0.0625);\n"
+    "    mediump vec3 cg = min(cf, 1.0 - cf);\n"
+    "    mediump float gedge = 0.0;\n"
+    "    if (abs(N.y) < 0.5) {\n"
+    "      if (cg.y < 0.008) gedge = 1.0;\n"
+    "      if (abs(N.x) < 0.5 && cg.x < 0.008) gedge = 1.0;\n"
+    "      if (abs(N.z) < 0.5 && cg.z < 0.008) gedge = 1.0;\n"
+    "    } else {\n"
+    "      if (cg.x < 0.008 || cg.z < 0.008) gedge = 1.0;\n"
+    "    }\n"
+    "    base = mix(base, vec3(0.24, 0.96, 0.72), gedge * 0.65 * aa);\n"
+    "  }\n"
     "  mediump float ndl = dot(N, u_sundir);\n"
     "  mediump float sun_wrap = clamp(ndl * 0.5 + 0.5, 0.0, 1.0);\n"
     "  mediump vec3 hemi = mix(vec3(0.76, 0.82, 0.95), mix(vec3(1.0), u_suncol, 0.38), sun_wrap);\n"
-    "  mediump vec3 lit = base * light * hemi;\n"
+    "  mediump vec3 p_lit = vec3(0.0);\n"
+    "  if (tier < 0.5) {\n"
+    "    for (int li = 0; li < 6; li++) {\n"
+    "      highp float lrad = u_light_pos[li].w;\n"
+    "      if (lrad > 0.1) {\n"
+    "        highp vec3 ld = u_light_pos[li].xyz - v_pos;\n"
+    "        highp float ld2 = dot(ld, ld);\n"
+    "        if (ld2 < lrad * lrad) {\n"
+    "          mediump float att = clamp(1.0 - sqrt(ld2) / lrad, 0.0, 1.0);\n"
+    "          p_lit += u_light_col[li].rgb * (att * att * u_light_col[li].a);\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "  }\n"
+    "  mediump float amb = mix(1.0, u_ambient, step(style, 0.5) + step(4.5, style) * step(style, 8.5));\n"
+    "  mediump vec3 lit = base * (light * hemi * amb + p_lit);\n"
     "  // Fast Blinn-Phong specular & Fresnel rim on crystalline/metallic/entity surfaces\n"
     "  if (spec_pow > 0.01) {\n"
     "    mediump vec3 H = normalize(u_sundir - V);\n"
@@ -600,6 +687,10 @@ static void init_gl_resources(void) {
     g_u_flash      = glGetUniformLocation(g_prog_world, "u_flash");
     g_u_sundir     = glGetUniformLocation(g_prog_world, "u_sundir");
     g_u_suncol     = glGetUniformLocation(g_prog_world, "u_suncol");
+    g_u_light_pos  = glGetUniformLocation(g_prog_world, "u_light_pos");
+    g_u_light_col  = glGetUniformLocation(g_prog_world, "u_light_col");
+    g_u_ambient    = glGetUniformLocation(g_prog_world, "u_ambient");
+    g_u_grid_on    = glGetUniformLocation(g_prog_world, "u_grid_on");
 
     static const float sky_quad[12] = {
         -1.f, -1.f,  1.f, -1.f,  1.f,  1.f,
@@ -686,6 +777,20 @@ static void block_color(uint8_t blk, uint8_t *r, uint8_t *g, uint8_t *b, float *
         case BLK_KEY_BLOCK:       *r = 255; *g = 228; *b = 72;  *style = 2.0f; break;
         case BLK_UPG_WEP:         *r = 48;  *g = 236; *b = 152; *style = 2.0f; break;
         case BLK_UPGRADE_STATION: *r = 255; *g = 140; *b = 40;  *style = 2.0f; break;
+        case BLK_QUICKSAND:       *r = 212; *g = 166; *b = 78;  *style = 7.0f; break;
+        case BLK_SOLAR_PLASMA:    *r = 255; *g = 128; *b = 24;  *style = 15.0f; break;
+        case BLK_LUNAR_REGOLITH:  *r = 156; *g = 164; *b = 178; *style = 0.0f; break;
+        case BLK_CRYSTAL_CYAN:    *r = 56;  *g = 232; *b = 246; *style = 3.0f; break;
+        case BLK_CRYSTAL_PURPLE:  *r = 178; *g = 84;  *b = 248; *style = 3.0f; break;
+        case BLK_BOOKSHELF:       *r = 158; *g = 104; *b = 58;  *style = 8.0f; break;
+        case BLK_NEON_GRID:       *r = 48;  *g = 224; *b = 255; *style = 15.0f; break;
+        case BLK_EVENT_HORIZON:   *r = 144; *g = 36;  *b = 228; *style = 1.0f; break;
+        case BLK_BETA_TILE:       *r = 68;  *g = 212; *b = 172; *style = 6.0f; break;
+        case BLK_MYLANTIS_RED:    *r = 196; *g = 46;  *b = 56;  *style = 6.0f; break;
+        case BLK_OBLIVION_BRICK:  *r = 116; *g = 46;  *b = 172; *style = 8.0f; break;
+        case BLK_ROOT_SOIL:       *r = 114; *g = 62;  *b = 48;  *style = 4.0f; break;
+        case BLK_BOTANY_TANK:     *r = 64;  *g = 172; *b = 250; *style = 3.0f; break;
+        case BLK_ARCADE_CAB:      *r = 168; *g = 62;  *b = 248; *style = 14.0f; break;
         default:                  *r = 128; *g = 128; *b = 140; *style = 0.0f; break;
     }
 }
@@ -1957,30 +2062,58 @@ static void build_dynamic_verts(const float planes[6][4]) {
             emit_ring_3d(e->x, e->y + bob_m, e->z, 0.44f, t * 3.5f, 74, 245, 128);
             continue;
         }
-        float hs = (k == ENT_SINGULARITY) ? 0.62f :
-                   (k == ENT_GUARDIAN || k == ENT_DEMON) ? 0.42f :
-                   (k >= ENT_GOLD) ? 0.21f : 0.33f;
-        float bob = (k >= ENT_GOLD) ? sinf(t * 3.5f + i) * 0.12f : 0.0f;
+        if (k == ENT_FLARE) {
+            float fp = 0.20f + 0.04f * sinf(t * 9.0f + i);
+            emit_cube(g_dyn_verts, &g_dyn_vert_cnt, MAX_DYN_VERTS,
+                      e->x, e->y, e->z, fp, 255, 240, 148, 255, 2.0f);
+            emit_ring_3d(e->x, e->y, e->z, 0.38f, t * 4.2f, 255, 198, 72);
+            continue;
+        }
+        float hp_ratio = (e->max_hp > 0) ? ((float)e->hp / (float)e->max_hp) : 1.0f;
+        float hs = (k == ENT_TON618_BOSS) ? 0.78f :
+                   (k == ENT_SINGULARITY) ? 0.62f :
+                   (k == ENT_HYDRA || k == ENT_ROCKET_SPIDER || k == ENT_BURLY) ? 0.46f :
+                   (k == ENT_GUARDIAN || k == ENT_DEMON || k == ENT_BEHOLDER) ? 0.42f :
+                   (k == ENT_GROWER) ? (0.34f + (1.0f - hp_ratio) * 0.34f) :
+                   (k == ENT_SHRINKER) ? (0.44f - (1.0f - hp_ratio) * 0.24f) :
+                   (k == ENT_GNAT || k == ENT_BABY_SPIDER || k == ENT_TWEEDLE) ? 0.22f :
+                   IS_PICKUP_KIND(k) ? 0.21f : 0.33f;
+        if (hs < 0.16f) hs = 0.16f;
+        float bob = IS_PICKUP_KIND(k) ? sinf(t * 3.5f + i) * 0.12f : 0.0f;
         uint8_t r = 200, g = 200, b = 200;
-        float style = (k >= ENT_GOLD) ? 2.0f : 9.0f;
-        if (k == ENT_RAT)         { r = 168; g = 132; b = 92; }
-        else if (k == ENT_SPIDER) { r = 128; g = 48;  b = 164; }
-        else if (k == ENT_GOON)   { r = 98;  g = 220; b = 74; }
-        else if (k == ENT_MARINE) { r = 64;  g = 152; b = 240; }
-        else if (k == ENT_PIRATE) { r = 234; g = 88;  b = 62; }
-        else if (k == ENT_YINYANG){ r = 235; g = 240; b = 250; }
-        else if (k == ENT_MENACE) { r = 245; g = 158; b = 11; }
-        else if (k == ENT_DEMON)  { r = 210; g = 32;  b = 68; }
-        else if (k == ENT_GUARDIAN){r = 250; g = 204; b = 21; }
-        else if (k == ENT_SINGULARITY) { r = 244; g = 63; b = 184; style = 1.0f; }
-        else if (k == ENT_GOLD)   { r = 255; g = 215; b = 42; }
-        else if (k == ENT_HEALTH) { r = 248; g = 72;  b = 92; }
-        else if (k == ENT_ARMOR)  { r = 72;  g = 196; b = 255; }
-        else if (k == ENT_AMMO)   { r = 255; g = 168; b = 56; }
-        else if (k == ENT_KEY)    { r = 253; g = 224; b = 71; }
-        else if (k == ENT_FRIEND_K) { r = 255; g = 248; b = 128; }
-
-        if (e->freeze_ms > 0 && k >= ENT_RAT && k <= ENT_SINGULARITY) {
+        float style = IS_PICKUP_KIND(k) ? 2.0f : 9.0f;
+        if (k == ENT_RAT)              { r = 168; g = 132; b = 92; }
+        else if (k == ENT_SPIDER)      { r = 128; g = 48;  b = 164; }
+        else if (k == ENT_GOON)        { r = 98;  g = 220; b = 74; }
+        else if (k == ENT_MARINE)      { r = 64;  g = 152; b = 240; }
+        else if (k == ENT_PIRATE)      { r = 234; g = 88;  b = 62; }
+        else if (k == ENT_YINYANG)     { r = 235; g = 240; b = 250; }
+        else if (k == ENT_MENACE)      { r = 245; g = 158; b = 11; }
+        else if (k == ENT_DEMON)       { r = 210; g = 32;  b = 68; }
+        else if (k == ENT_GUARDIAN)    { r = 250; g = 204; b = 21; }
+        else if (k == ENT_SINGULARITY) { r = 244; g = 63;  b = 184; style = 1.0f; }
+        else if (k == ENT_TWEEDLE)     { r = 224; g = 96;  b = 200; }
+        else if (k == ENT_GNAT)        { r = 182; g = 244; b = 64; }
+        else if (k == ENT_BABY_SPIDER) { r = 148; g = 38;  b = 116; }
+        else if (k == ENT_LAMPREY)     { r = 164; g = 42;  b = 58; }
+        else if (k == ENT_BURLY)       { r = 118; g = 136; b = 156; }
+        else if (k == ENT_BEHOLDER)    { r = 152; g = 58;  b = 236; style = 1.0f; }
+        else if (k == ENT_SLIVER)      { r = 196; g = 240; b = 255; style = 3.0f; }
+        else if (k == ENT_VULCAN)      { r = 255; g = 112; b = 32;  style = 15.0f; }
+        else if (k == ENT_GROWER)      { r = 68;  g = 226; b = 118; }
+        else if (k == ENT_SHRINKER)    { r = 248; g = 198; b = 46; }
+        else if (k == ENT_ROCKET_SPIDER){r = 218; g = 52;  b = 76; }
+        else if (k == ENT_HYDRA)       { r = 42;  g = 196; b = 168; }
+        else if (k == ENT_TON618_BOSS) { r = 148; g = 32;  b = 255; style = 1.0f; }
+        else if (k == ENT_HEX_SENTRY)  { r = 52;  g = 232; b = 188; style = 1.0f; }
+        else if (k == ENT_ARCADE_DRONE){ r = 255; g = 68;  b = 236; style = 15.0f; }
+        else if (k == ENT_GOLD)        { r = 255; g = 215; b = 42; }
+        else if (k == ENT_HEALTH)      { r = 248; g = 72;  b = 92; }
+        else if (k == ENT_ARMOR)       { r = 72;  g = 196; b = 255; }
+        else if (k == ENT_AMMO)        { r = 255; g = 168; b = 56; }
+        else if (k == ENT_KEY)         { r = 253; g = 224; b = 71; }
+        else if (k == ENT_FRIEND_K)    { r = 255; g = 248; b = 128; }
+        if (e->freeze_ms > 0 && IS_ENEMY_KIND(k)) {
             r = (uint8_t)((r + 96 * 2) / 3);
             g = (uint8_t)((g + 240 * 2) / 3);
             b = 255;
@@ -1990,7 +2123,7 @@ static void build_dynamic_verts(const float planes[6][4]) {
                   e->x, e->y + bob, e->z, hs, r, g, b, 255, style);
         // Multi-part stylized silhouette (distance-culled appendages beyond 40 units)
         if (d2 < 1600.0f) {
-            if (k >= ENT_RAT && k <= ENT_SINGULARITY) {
+            if (IS_ENEMY_KIND(k)) {
                 float wing = sinf(t * 6.0f + i) * hs * 0.35f;
                 uint8_t er = (uint8_t)(e->freeze_ms > 0 ? 186 : 255);
                 uint8_t eg = (uint8_t)(e->freeze_ms > 0 ? 250 : 52);
@@ -2001,15 +2134,24 @@ static void build_dynamic_verts(const float planes[6][4]) {
                           e->x - hs * 1.25f, e->y + wing, e->z, hs * 0.36f, r, g, b, 255, 9.0f);
                 emit_cube(g_dyn_verts, &g_dyn_vert_cnt, MAX_DYN_VERTS,
                           e->x + hs * 1.25f, e->y - wing, e->z, hs * 0.36f, r, g, b, 255, 9.0f);
-                if (k == ENT_SINGULARITY || k == ENT_GUARDIAN) {
+                if (k == ENT_BEHOLDER || k == ENT_HYDRA) {
+                    emit_cube(g_dyn_verts, &g_dyn_vert_cnt, MAX_DYN_VERTS,
+                              e->x, e->y + hs * 0.25f, e->z + hs * 1.05f, hs * 0.34f, 255, 250, 210, 255, 2.0f);
+                    emit_ring_3d(e->x, e->y, e->z, hs * 1.70f, t * 2.4f, 180, 96, 255);
+                }
+                if (k == ENT_SINGULARITY || k == ENT_GUARDIAN || k == ENT_GROWER || k == ENT_SHRINKER) {
                     emit_ring_3d(e->x, e->y, e->z, hs * 1.95f, t * 3.0f, 255, 96, 220);
+                }
+                if (k == ENT_TON618_BOSS) {
+                    emit_ring_3d(e->x, e->y, e->z, hs * 2.25f, t * 3.8f, 255, 168, 48);
+                    emit_ring_3d(e->x, e->y, e->z, hs * 1.65f, -t * 5.2f, 168, 72, 255);
                 }
             } else if (k == ENT_FRIEND_K) {
                 emit_cube(g_dyn_verts, &g_dyn_vert_cnt, MAX_DYN_VERTS,
                           e->x, e->y + bob + hs * 1.35f, e->z, hs * 0.55f,
                           255, 255, 200, 255, 2.0f);
                 emit_ring_3d(e->x, e->y + bob, e->z, hs * 1.8f, t * 1.8f, 255, 240, 110);
-            } else if (k >= ENT_GOLD) {
+            } else if (IS_PICKUP_KIND(k)) {
                 float ox = cosf(t * 4.0f + i) * hs * 1.45f;
                 float oz = sinf(t * 4.0f + i) * hs * 1.45f;
                 emit_cube(g_dyn_verts, &g_dyn_vert_cnt, MAX_DYN_VERTS,
@@ -2080,6 +2222,48 @@ static void biome_sky_colors(int biome, float *tr, float *tg, float *tb,
         case 9: *tr=0.36f; *tg=0.18f; *tb=0.07f; *br=0.86f; *bg=0.62f; *bb=0.28f;
                 sun_dir[0]=0.60f; sun_dir[1]=0.64f; sun_dir[2]=0.48f;
                 sun_col[0]=1.00f; sun_col[1]=0.84f; sun_col[2]=0.54f; break;
+        case 10:*tr=0.18f; *tg=0.42f; *tb=0.72f; *br=0.72f; *bg=0.92f; *bb=0.62f;
+                sun_dir[0]=0.44f; sun_dir[1]=0.80f; sun_dir[2]=0.40f;
+                sun_col[0]=1.00f; sun_col[1]=0.98f; sun_col[2]=0.76f; break;
+        case 11:*tr=0.04f; *tg=0.10f; *tb=0.14f; *br=0.18f; *bg=0.24f; *bb=0.22f;
+                sun_dir[0]=0.35f; sun_dir[1]=0.72f; sun_dir[2]=0.58f;
+                sun_col[0]=0.96f; sun_col[1]=0.88f; sun_col[2]=0.64f; break;
+        case 12:*tr=0.06f; *tg=0.24f; *tb=0.52f; *br=0.28f; *bg=0.72f; *bb=0.94f;
+                sun_dir[0]=0.40f; sun_dir[1]=0.78f; sun_dir[2]=0.48f;
+                sun_col[0]=0.76f; sun_col[1]=0.96f; sun_col[2]=1.00f; break;
+        case 13:*tr=0.05f; *tg=0.28f; *tb=0.26f; *br=0.26f; *bg=0.74f; *bb=0.64f;
+                sun_dir[0]=-0.45f; sun_dir[1]=0.76f; sun_dir[2]=0.46f;
+                sun_col[0]=0.82f; sun_col[1]=1.00f; sun_col[2]=0.90f; break;
+        case 14:*tr=0.14f; *tg=0.02f; *tb=0.04f; *br=0.38f; *bg=0.07f; *bb=0.10f;
+                sun_dir[0]=0.50f; sun_dir[1]=0.62f; sun_dir[2]=0.60f;
+                sun_col[0]=1.00f; sun_col[1]=0.58f; sun_col[2]=0.48f; break;
+        case 15:*tr=0.03f; *tg=0.07f; *tb=0.16f; *br=0.16f; *bg=0.32f; *bb=0.54f;
+                sun_dir[0]=0.42f; sun_dir[1]=0.66f; sun_dir[2]=0.62f;
+                sun_col[0]=1.00f; sun_col[1]=0.96f; sun_col[2]=0.68f; break;
+        case 16:*tr=0.12f; *tg=0.24f; *tb=0.42f; *br=0.44f; *bg=0.64f; *bb=0.78f;
+                sun_dir[0]=-0.42f; sun_dir[1]=0.76f; sun_dir[2]=0.48f;
+                sun_col[0]=0.95f; sun_col[1]=0.94f; sun_col[2]=0.88f; break;
+        case 17:*tr=0.16f; *tg=0.38f; *tb=0.58f; *br=0.62f; *bg=0.88f; *bb=0.78f;
+                sun_dir[0]=0.46f; sun_dir[1]=0.80f; sun_dir[2]=0.38f;
+                sun_col[0]=1.00f; sun_col[1]=0.95f; sun_col[2]=0.86f; break;
+        case 18:*tr=0.09f; *tg=0.04f; *tb=0.05f; *br=0.24f; *bg=0.12f; *bb=0.14f;
+                sun_dir[0]=0.36f; sun_dir[1]=0.68f; sun_dir[2]=-0.64f;
+                sun_col[0]=0.94f; sun_col[1]=0.76f; sun_col[2]=0.68f; break;
+        case 19:*tr=0.10f; *tg=0.02f; *tb=0.18f; *br=0.32f; *bg=0.10f; *bb=0.46f;
+                sun_dir[0]=-0.48f; sun_dir[1]=0.70f; sun_dir[2]=0.52f;
+                sun_col[0]=0.92f; sun_col[1]=0.68f; sun_col[2]=1.00f; break;
+        case 20:*tr=0.12f; *tg=0.26f; *tb=0.40f; *br=0.52f; *bg=0.76f; *bb=0.88f;
+                sun_dir[0]=0.48f; sun_dir[1]=0.76f; sun_dir[2]=0.44f;
+                sun_col[0]=1.00f; sun_col[1]=0.98f; sun_col[2]=0.90f; break;
+        case 21:*tr=0.04f; *tg=0.02f; *tb=0.14f; *br=0.18f; *bg=0.06f; *bb=0.34f;
+                sun_dir[0]=0.45f; sun_dir[1]=0.74f; sun_dir[2]=0.50f;
+                sun_col[0]=0.46f; sun_col[1]=0.94f; sun_col[2]=1.00f; break;
+        case 22:*tr=0.01f; *tg=0.01f; *tb=0.03f; *br=0.14f; *bg=0.04f; *bb=0.22f;
+                sun_dir[0]=0.32f; sun_dir[1]=0.82f; sun_dir[2]=0.48f;
+                sun_col[0]=1.00f; sun_col[1]=0.64f; sun_col[2]=0.32f; break;
+        case 23:*tr=0.02f; *tg=0.03f; *tb=0.08f; *br=0.08f; *bg=0.14f; *bb=0.26f;
+                sun_dir[0]=0.62f; sun_dir[1]=0.62f; sun_dir[2]=0.48f;
+                sun_col[0]=1.00f; sun_col[1]=0.92f; sun_col[2]=0.72f; break;
         default:*tr=0.18f; *tg=0.03f; *tb=0.20f; *br=0.42f; *bg=0.09f; *bb=0.36f;
                 sun_dir[0]=0.45f; sun_dir[1]=0.74f; sun_dir[2]=0.50f;
                 sun_col[0]=1.00f; sun_col[1]=0.65f; sun_col[2]=0.88f; break;
@@ -2343,11 +2527,31 @@ FBW_VIS_DEFAULT void fbw_gl_mark_inward_dirty(void) {
     g_inward_dirty = 1;
 }
 
+FBW_VIS_DEFAULT void fbw_gl_set_render_opts(int chunk_grid, int dark_caves) {
+    g_chunk_grid = (chunk_grid != 0) ? 1 : 0;
+    g_dark_caves = (dark_caves != 0) ? 1 : 0;
+}
+
+FBW_VIS_DEFAULT void fbw_gl_push_light(int x_mm, int y_mm, int z_mm, int rgb, int rad_mm) {
+    if (g_light_cnt >= MAX_LIGHTS) return;
+    FbwLight *l = &g_lights[g_light_cnt++];
+    l->x = (float)x_mm * 0.001f;
+    l->y = (float)y_mm * 0.001f;
+    l->z = (float)z_mm * 0.001f;
+    l->rad = (float)rad_mm * 0.001f;
+    if (l->rad < 0.25f) l->rad = 0.25f;
+    l->r = (float)((rgb >> 16) & 0xff) / 255.0f;
+    l->g = (float)((rgb >> 8) & 0xff) / 255.0f;
+    l->b = (float)(rgb & 0xff) / 255.0f;
+    l->pad = 1.45f;
+}
+
 FBW_VIS_DEFAULT void fbw_gl_clear_dynamic(void) {
     g_ent_cnt = 0;
     g_shot_cnt = 0;
     g_part_cnt = 0;
     g_beam_active = 0;
+    g_light_cnt = 0;
 }
 
 FBW_VIS_DEFAULT void fbw_gl_push_entity(int kind, int x_mm, int y_mm, int z_mm, int hp, int max_hp, int freeze_ms) {
@@ -2451,7 +2655,9 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
     float sun_dir[3], sun_col[3];
     biome_sky_colors(g_biome, &tr, &tg, &tb, &br, &bg, &bb, sun_dir, sun_col);
     float time_s = (float)g_anim_ms * 0.001f;
-    float star = (g_biome == 0 || g_biome == 1 || g_biome == 6 || g_biome == 7) ? 1.0f : 0.0f;
+    float star = (g_biome == 0 || g_biome == 1 || g_biome == 6 || g_biome == 7 ||
+                  g_biome == 11 || g_biome == 14 || g_biome == 15 || g_biome == 18 ||
+                  g_biome == 19 || g_biome == 21 || g_biome == 22 || g_biome == 23) ? 1.0f : 0.0f;
     float aspect = (float)g_vp_w / (float)g_vp_h;
 
     float cp = cosf(g_pitch), sp = sinf(g_pitch);
@@ -2515,6 +2721,34 @@ FBW_VIS_DEFAULT void fbw_gl_render_3d(void) {
     glUniform4f(g_u_flash, fl_r, fl_g, fl_b, flash_a);
     glUniform3f(g_u_sundir, sun_dir[0], sun_dir[1], sun_dir[2]);
     glUniform3f(g_u_suncol, sun_col[0], sun_col[1], sun_col[2]);
+    float cave_amb = 1.0f;
+    if (g_dark_caves && (g_biome == 5 || g_biome == 6 || g_biome == 11 ||
+                         g_biome == 14 || g_biome == 18 || g_biome == 19 || g_biome == 22)) {
+        cave_amb = 0.42f;
+    }
+    glUniform1f(g_u_ambient, cave_amb);
+    glUniform1f(g_u_grid_on, (float)g_chunk_grid);
+    float lp_buf[MAX_LIGHTS * 4];
+    float lc_buf[MAX_LIGHTS * 4];
+    for (int li = 0; li < MAX_LIGHTS; li++) {
+        if (li < g_light_cnt) {
+            lp_buf[li * 4 + 0] = g_lights[li].x;
+            lp_buf[li * 4 + 1] = g_lights[li].y;
+            lp_buf[li * 4 + 2] = g_lights[li].z;
+            lp_buf[li * 4 + 3] = g_lights[li].rad;
+            lc_buf[li * 4 + 0] = g_lights[li].r;
+            lc_buf[li * 4 + 1] = g_lights[li].g;
+            lc_buf[li * 4 + 2] = g_lights[li].b;
+            lc_buf[li * 4 + 3] = g_lights[li].pad;
+        } else {
+            lp_buf[li * 4 + 0] = 0.0f; lp_buf[li * 4 + 1] = 0.0f;
+            lp_buf[li * 4 + 2] = 0.0f; lp_buf[li * 4 + 3] = 0.0f;
+            lc_buf[li * 4 + 0] = 0.0f; lc_buf[li * 4 + 1] = 0.0f;
+            lc_buf[li * 4 + 2] = 0.0f; lc_buf[li * 4 + 3] = 0.0f;
+        }
+    }
+    if (g_u_light_pos >= 0) glUniform4fv(g_u_light_pos, MAX_LIGHTS, lp_buf);
+    if (g_u_light_col >= 0) glUniform4fv(g_u_light_col, MAX_LIGHTS, lc_buf);
 
     glEnableVertexAttribArray(0);
     glEnableVertexAttribArray(1);

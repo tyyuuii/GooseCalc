@@ -26,6 +26,8 @@ void fbw_gl_push_inward_quad(int slot, int qidx, int packed4);
 void fbw_gl_set_l1_inward_meta(int slot, int valid, int bx, int by, int bz, int biome);
 void fbw_gl_push_l1_inward_quad(int slot, int qidx, int packed4);
 void fbw_gl_set_lod_config(int disable_lod, int lod_dist_level);
+void fbw_gl_set_render_opts(int chunk_grid, int dark_caves);
+void fbw_gl_push_light(int x_mm, int y_mm, int z_mm, int rgb, int rad_mm);
 void fbw_gl_mark_inward_dirty(void);
 
 // Dynamic per-frame geometry

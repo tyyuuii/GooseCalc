@@ -295,8 +295,8 @@ static void bgm_bq_callback(SLBufferQueueItf bq, void *context) {
 #define CLICK_RATE     44100
 #define CLICK_MS       60
 #define CLICK_SAMPLES  (CLICK_RATE * CLICK_MS / 1000)
-#define SFX_COUNT      8
-#define SFX_MAX_MS     220
+#define SFX_COUNT      13
+#define SFX_MAX_MS     260
 #define SFX_MAX_SAMP   (CLICK_RATE * SFX_MAX_MS / 1000)
 
 static short g_sfx_pcm[SFX_COUNT][SFX_MAX_SAMP];
@@ -308,7 +308,12 @@ static int g_sfx_len[SFX_COUNT] = {
     CLICK_RATE * 200 / 1000,  // 4: SFX_WARP
     CLICK_RATE * 120 / 1000,  // 5: SFX_PICKUP
     CLICK_RATE * 140 / 1000,  // 6: SFX_HURT
-    CLICK_RATE * 200 / 1000   // 7: SFX_EMP
+    CLICK_RATE * 200 / 1000,  // 7: SFX_EMP
+    CLICK_RATE * 180 / 1000,  // 8: SFX_CANNON
+    CLICK_RATE * 65 / 1000,   // 9: SFX_MINIGUN
+    CLICK_RATE * 165 / 1000,  // 10: SFX_RAILGUN
+    CLICK_RATE * 260 / 1000,  // 11: SFX_NUKE
+    CLICK_RATE * 240 / 1000   // 12: SFX_LEVEL_UP
 };
 
 static short clamp_pcm(double v) {
@@ -360,6 +365,8 @@ static void sound_init(void) {
     double ph_laser = 0.0;
     double ph_warp = 0.0;
     double ph_emp = 0.0;
+    double ph_cannon = 0.0;
+    double ph_rail = 0.0;
 
     for (int i = 0; i < SFX_MAX_SAMP; i++) {
         double t = (double)i / CLICK_RATE;
@@ -442,6 +449,48 @@ static void sound_init(void) {
             double env = exp(-t * 11.0);
             double s = sin(ph_emp) * (0.4 + 0.6 * ring) * env * att;
             g_sfx_pcm[7][i] = clamp_pcm(s * 13000.0);
+        }
+        // 8: SFX_CANNON (180ms punchy low-mid launcher thump 260 -> 58 Hz)
+        if (i < g_sfx_len[8]) {
+            double p = (double)i / (double)g_sfx_len[8];
+            double freq = 260.0 - 202.0 * sqrt(p);
+            ph_cannon += 2.0 * M_PI * freq / CLICK_RATE;
+            double env = exp(-t * 16.0);
+            double s = (tanh(sin(ph_cannon) * 1.9) * 0.78 + lp * 0.45) * env * att;
+            g_sfx_pcm[8][i] = clamp_pcm(s * 14500.0);
+        }
+        // 9: SFX_MINIGUN (65ms snappy mechanical ballistic burst)
+        if (i < g_sfx_len[9]) {
+            double env = exp(-t * 48.0);
+            double s = (sin(2.0 * M_PI * 760.0 * t) * 0.45 + wn * 0.65) * env * att;
+            g_sfx_pcm[9][i] = clamp_pcm(s * 13000.0);
+        }
+        // 10: SFX_RAILGUN (165ms crisp supersonic magnetic snap 2100 -> 280 Hz)
+        if (i < g_sfx_len[10]) {
+            double p = (double)i / (double)g_sfx_len[10];
+            double freq = 2100.0 * exp(-p * 2.1) + 220.0;
+            ph_rail += 2.0 * M_PI * freq / CLICK_RATE;
+            double env = exp(-t * 14.0);
+            double s = (tanh(sin(ph_rail) * 2.2) * 0.72 + lp * 0.35) * env * att;
+            g_sfx_pcm[10][i] = clamp_pcm(s * 14000.0);
+        }
+        // 11: SFX_NUKE (260ms heavy sub-bass detonation + filtered crackle)
+        if (i < g_sfx_len[11]) {
+            double p = (double)i / (double)g_sfx_len[11];
+            double sub = sin(2.0 * M_PI * (78.0 - 44.0 * p) * t);
+            double env = exp(-t * 7.5);
+            double s = (lp * 1.65 + sub * 0.95) * env * att;
+            g_sfx_pcm[11][i] = clamp_pcm(s * 16500.0);
+        }
+        // 12: SFX_LEVEL_UP (240ms ascending fractal triad arpeggio 523/659/784/1046 Hz)
+        if (i < g_sfx_len[12]) {
+            int step = (i * 4) / g_sfx_len[12];
+            double notes[4] = { 523.25, 659.25, 783.99, 1046.50 };
+            double f = notes[step < 4 ? step : 3];
+            double step_t = (double)(i % (g_sfx_len[12] / 4 + 1)) / CLICK_RATE;
+            double env = exp(-step_t * 18.0) * (1.0 - (double)i / (double)g_sfx_len[12] * 0.3);
+            double s = (sin(2.0 * M_PI * f * t) + 0.3 * sin(4.0 * M_PI * f * t)) * env * att;
+            g_sfx_pcm[12][i] = clamp_pcm(s * 12500.0);
         }
     }
     // Decode BGM MP3 to 16 kHz mono PCM in memory

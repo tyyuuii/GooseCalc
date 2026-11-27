@@ -14,11 +14,12 @@ const MAX_NEG_DEPTH: i32 = -128;
 const MAX_ENTITIES: i32 = 96;
 const MAX_SHOTS: i32 = 72;
 const MAX_PARTICLES: i32 = 72;
-const MAX_DELTAS: i32 = 512;
+const MAX_DELTAS: i32 = 2048;
 const MAX_MARKERS: i32 = 16;
 
 const MAX_GOLD: i32 = 1000000;
 const DEATH_GOLD_PENALTY: i32 = 30;
+const SHORT_MARKER_TTL_MS: i64 = 10800000; // 3 hours game time
 
 // Screen / Modal states
 const SCREEN_TITLE: i32 = 0;
@@ -36,18 +37,34 @@ const SCREEN_TOME: i32 = 11;
 const SCREEN_VICTORY: i32 = 12;
 const SCREEN_UPGRADE: i32 = 13;
 const SCREEN_EDIT_UI: i32 = 14;
+const SCREEN_ARCADE: i32 = 15;
 
-// Biomes (Authentic Xar Progression)
-const BIOME_SPACE: i32 = 0;         // Outer Space Level 0 (depth < 0)
-const BIOME_TUTORIAL: i32 = 1;      // Tutorial Room & Tutorial Island (depth == 0)
-const BIOME_YING_FOREST: i32 = 2;   // Ying Forest (Ying Trees, Totems, Flowers)
-const BIOME_WHITE_FLOWER: i32 = 3;  // Small White Flower / Alpha Cube
-const BIOME_YELLOW_FLOWER: i32 = 4; // Small & Jumbo Yellow Flower Labyrinths
-const BIOME_MYLANTIS: i32 = 5;      // Mylantis Crust & Caves
-const BIOME_BLACK_CUBE: i32 = 6;    // Black Cube / I1 / I2 / I3 Menger Lattice
-const BIOME_INNER_CORE: i32 = 7;    // The Core / Singularity & K
-const BIOME_ICE_WORLD: i32 = 8;     // Glacial Spire & Ice Caves
-const BIOME_DESERT_WORLD: i32 = 9;  // Sandstone Pyramid & Gold Tomb
+// Biomes (Authentic Steam Xar Progression 0..23)
+const BIOME_SPACE: i32 = 0;          // Outer Space Level 0 (depth < 0)
+const BIOME_TUTORIAL: i32 = 1;       // Tutorial Room & Tutorial Island (depth == 0)
+const BIOME_YING_FOREST: i32 = 2;    // Ying Forest (Ying Trees, Totems, Flowers)
+const BIOME_WHITE_FLOWER: i32 = 3;   // Small White Flower / Alpha Cube
+const BIOME_YELLOW_FLOWER: i32 = 4;  // Small & Jumbo Yellow Flower Labyrinths
+const BIOME_MYLANTIS: i32 = 5;       // Mylantis Crust & Caves
+const BIOME_BLACK_CUBE: i32 = 6;     // Black Cube / I1 / I2 / I3 Menger Lattice
+const BIOME_INNER_CORE: i32 = 7;     // The Core / Singularity & K
+const BIOME_ICE_WORLD: i32 = 8;      // Glacial Spire & Ice Caves
+const BIOME_DESERT_WORLD: i32 = 9;   // Sandstone Pyramid & Gold Tomb
+const BIOME_NOOB_FLOWER: i32 = 10;   // Noob Flower Sanctuary
+const BIOME_YING_LIBRARY: i32 = 11;  // Ying Library & Tome Archives
+const BIOME_BOTANY_LAB: i32 = 12;    // Botany Lab Bio-Domed Tanks
+const BIOME_BETA_CUBE: i32 = 13;     // Beta Cube Checkerboard Vault
+const BIOME_RED_CAVES: i32 = 14;     // Deep Red Caverns
+const BIOME_I1_LIGHTHOUSE: i32 = 15; // I1 Beacon & Crystal Lighthouse
+const BIOME_I2_MOUNTAINS: i32 = 16;  // I2 Ridge & Lunar Highlands
+const BIOME_BURLINGTON: i32 = 17;    // Burlington Citadel
+const BIOME_I3_ROOTS: i32 = 18;      // I3 Subterranean Root Matrix
+const BIOME_PURPLE_HOUSE: i32 = 19;  // Oblivion Purple House
+const BIOME_SINGLETON: i32 = 20;     // The Singleton Paradox
+const BIOME_ARCADE: i32 = 21;        // Neon Grid Arcade
+const BIOME_TON618: i32 = 22;        // TON 618 Supermassive Abyss
+const BIOME_SOLAR_SYSTEM: i32 = 23;  // Solar Corona & Planetary Orbits
+const NUM_BIOMES: i32 = 24;
 
 // Block IDs
 const BLK_AIR: u8 = 0;
@@ -100,6 +117,20 @@ const BLK_UPG_SPEED: u8 = 42;
 const BLK_KEY_BLOCK: u8 = 43;
 const BLK_UPG_WEP: u8 = 44;
 const BLK_UPGRADE_STATION: u8 = 45;
+const BLK_QUICKSAND: u8 = 46;
+const BLK_SOLAR_PLASMA: u8 = 47;
+const BLK_LUNAR_REGOLITH: u8 = 48;
+const BLK_CRYSTAL_CYAN: u8 = 49;
+const BLK_CRYSTAL_PURPLE: u8 = 50;
+const BLK_BOOKSHELF: u8 = 51;
+const BLK_NEON_GRID: u8 = 52;
+const BLK_EVENT_HORIZON: u8 = 53;
+const BLK_BETA_TILE: u8 = 54;
+const BLK_MYLANTIS_RED: u8 = 55;
+const BLK_OBLIVION_BRICK: u8 = 56;
+const BLK_ROOT_SOIL: u8 = 57;
+const BLK_BOTANY_TANK: u8 = 58;
+const BLK_ARCADE_CAB: u8 = 59;
 
 // Entity kinds
 const ENT_NONE: i32 = 0;
@@ -130,6 +161,23 @@ const ENT_KEY: i32 = 19;
 const ENT_FRIEND_K: i32 = 20;
 const ENT_RING_DANGER: i32 = 21;    // High-risk 256x danger dive ring
 const ENT_MARKER_BEACON: i32 = 22;  // Visual beacon for Short Marker
+const ENT_FLARE: i32 = 23;          // Active dynamic illumination flare
+// Extended Monster Manual Enemies (Steam FBW)
+const ENT_TWEEDLE: i32 = 24;
+const ENT_GNAT: i32 = 25;
+const ENT_BABY_SPIDER: i32 = 26;
+const ENT_LAMPREY: i32 = 27;
+const ENT_BURLY: i32 = 28;
+const ENT_BEHOLDER: i32 = 29;
+const ENT_SLIVER: i32 = 30;
+const ENT_VULCAN: i32 = 31;
+const ENT_GROWER: i32 = 32;
+const ENT_SHRINKER: i32 = 33;
+const ENT_ROCKET_SPIDER: i32 = 34;
+const ENT_HYDRA: i32 = 35;
+const ENT_TON618_BOSS: i32 = 36;
+const ENT_HEX_SENTRY: i32 = 37;
+const ENT_ARCADE_DRONE: i32 = 38;
 
 // Audio SFX IDs (synthesized in main.c OpenSL ES sound bank)
 const SFX_CLICK: i32 = 0;
@@ -140,9 +188,14 @@ const SFX_WARP: i32 = 4;
 const SFX_PICKUP: i32 = 5;
 const SFX_HURT: i32 = 6;
 const SFX_EMP: i32 = 7;
+const SFX_CANNON: i32 = 8;
+const SFX_MINIGUN: i32 = 9;
+const SFX_RAILGUN: i32 = 10;
+const SFX_NUKE: i32 = 11;
+const SFX_LEVEL_UP: i32 = 12;
 
 const MAX_NEIGHBORS: i32 = 342; // ring-ordered sibling set (radius 3 = 7^3-1); Xar kilochunk-scale visibility
-const MAX_CLEARED_CHUNKS: i32 = 128;
+const MAX_CLEARED_CHUNKS: i32 = 256;
 
 // 10 Authentic Weapons (Keys 1..9, 0)
 const WEP_PLASMA: i32 = 0;   // 1
@@ -236,6 +289,7 @@ struct Marker {
     pos_cnt: i32,
     neg_off: i32,
     neg_cnt: i32,
+    created_ms: i64,
 }
 
 root struct fbw_state {
@@ -382,8 +436,8 @@ root struct fbw_state {
     near_prompt: u8[64],
 
     // Persistent cleared entity/pickup bitmasks per chunk seed
-    cleared_seeds: u64[128],
-    cleared_masks: u32[128],
+    cleared_seeds: u64[MAX_CLEARED_CHUNKS],
+    cleared_masks: u32[MAX_CLEARED_CHUNKS],
     cleared_head: i32,
 
     // Simulation arrays
@@ -406,6 +460,35 @@ root struct fbw_state {
     anim_ms: i64,
     level: i32,          // player level (max 500); grants upgrades on level-up
     xp: i32,             // experience toward next level
+    // Per-weapon upgrades & extra mechanics
+    wep_dmg_lvl: i32[NUM_WEAPONS],
+    wep_rof_lvl: i32[NUM_WEAPONS],
+    wep_cap_lvl: i32[NUM_WEAPONS],
+    wep_vel_lvl: i32[NUM_WEAPONS],
+    plasma_regen_lvl: i32,
+    emp_rad_lvl: i32,
+    shield_cap_lvl: i32,
+    enemy_kills: i32[40],
+    icarus_mode: i32,
+    mut_double_monsters: i32,
+    mut_no_singleton: i32,
+    mut_inf_markers: i32,
+    show_chunk_grid: i32,
+    hazard_cd_ms: i32,
+    // Arcade cabinet minigame state
+    arcade_score: i32,
+    arcade_best: i32,
+    arcade_timer_ms: i32,
+    arcade_target: i32,
+    arcade_hits: i32,
+    arcade_active: i32,
+    // Multi-hit destructible block HP ring buffer
+    blk_hp_x: i32[32],
+    blk_hp_y: i32[32],
+    blk_hp_z: i32[32],
+    blk_hp_val: i32[32],
+    blk_hp_seed: u64[32],
+    blk_hp_head: i32,
     autosave_dirty: i32, // set when progress/world state changes cleanly
 }
 
@@ -675,14 +758,48 @@ fn queue_sfx(kind: i32) {
     }
 }
 
-fn award_trophy(bit: i32, msg: const u8[:]) {
-    if (st.trophy_mask & bit) != 0 { return; }
-    st.trophy_mask = st.trophy_mask | bit;
+fn award_trophy_id(tid: i32, msg: const u8[:]) {
+    if tid < 0 || tid >= 32 { return; }
+    let mask_u: u32 = st.trophy_mask as! u32;
+    let bit_u: u32 = (1 as! u32) << (tid as! u32);
+    if (mask_u & bit_u) != 0 { return; }
+    st.trophy_mask = (mask_u | bit_u) as! i32;
     st.trophies = st.trophies + 1;
     st.score_xp = st.score_xp + 250;
     st.autosave_dirty = 1;
     queue_sfx(SFX_PICKUP);
     set_status_msg(msg, 3200);
+}
+
+fn award_trophy(bit: i32, msg: const u8[:]) {
+    var tid: i32 = 0;
+    var v: u32 = bit as! u32;
+    while v > 1 && tid < 31 {
+        v = v >> 1;
+        tid = tid + 1;
+    }
+    award_trophy_id(tid, msg);
+}
+
+fn is_enemy_kind(k: i32) -> i32 {
+    if (k >= ENT_RAT && k <= ENT_SINGULARITY) || (k >= ENT_TWEEDLE && k <= ENT_ARCADE_DRONE) {
+        return 1;
+    }
+    return 0;
+}
+
+fn is_enemy_freeze_immune(k: i32) -> i32 {
+    if k == ENT_SLIVER || k == ENT_VULCAN || k == ENT_HEX_SENTRY || k == ENT_TON618_BOSS {
+        return 1;
+    }
+    return 0;
+}
+
+fn is_enemy_mystical(k: i32) -> i32 {
+    if k == ENT_BEHOLDER || k == ENT_HYDRA || k == ENT_TON618_BOSS {
+        return 1;
+    }
+    return 0;
 }
 
 fn is_entity_cleared(seed: u64, slot_id: i32) -> i32 {
@@ -851,7 +968,8 @@ fn is_block_subdivisible(b: u8) -> i32 {
        b == BLK_STONE || b == BLK_GOLD_ORE || b == BLK_CRATE || b == BLK_SPAWNER ||
        b == BLK_LOCKED_DOOR || b == BLK_MYSTERY_Q || b == BLK_HAZARD_NUKE ||
        b == BLK_TOPAZ_CHECK || b == BLK_BUY_STATION || b == BLK_SELL_STATION ||
-       b == BLK_BLACK_MARKET || b == BLK_UPGRADE_STATION || b == BLK_TOME || b == BLK_TEXT_BLOCK {
+       b == BLK_BLACK_MARKET || b == BLK_UPGRADE_STATION || b == BLK_TOME || b == BLK_TEXT_BLOCK ||
+       (b >= BLK_QUICKSAND && b <= BLK_ARCADE_CAB) {
         return 1;
     }
     return 0;
@@ -860,7 +978,9 @@ fn is_block_subdivisible(b: u8) -> i32 {
 fn is_block_molecular(b: u8) -> i32 {
     if b == BLK_STONE || b == BLK_DIRT || b == BLK_GOLD_ORE ||
        b == BLK_CRATE || b == BLK_LOCKED_DOOR || b == BLK_SPAWNER ||
-       b == BLK_HAZARD_NUKE || b == BLK_TOPAZ_CHECK {
+       b == BLK_HAZARD_NUKE || b == BLK_TOPAZ_CHECK ||
+       b == BLK_LUNAR_REGOLITH || b == BLK_MYLANTIS_RED ||
+       b == BLK_OBLIVION_BRICK || b == BLK_ROOT_SOIL {
         return 1;
     }
     return 0;
@@ -873,9 +993,15 @@ fn is_block_upgrade(b: u8) -> i32 {
 
 fn is_block_destructible(b: u8) -> i32 {
     if b == BLK_CRATE || b == BLK_SPAWNER || b == BLK_GOLD_ORE ||
-       b == BLK_MYSTERY_Q || b == BLK_HAZARD_NUKE || b == BLK_TOPAZ_CHECK {
+       b == BLK_MYSTERY_Q || b == BLK_HAZARD_NUKE || b == BLK_TOPAZ_CHECK ||
+       b == BLK_CRYSTAL_CYAN || b == BLK_CRYSTAL_PURPLE {
         return 1;
     }
+    return 0;
+}
+
+fn is_block_hazard(b: u8) -> i32 {
+    if b == BLK_QUICKSAND || b == BLK_SOLAR_PLASMA || b == BLK_EVENT_HORIZON { return 1; }
     return 0;
 }
 
@@ -889,6 +1015,20 @@ fn biome_name(biome: i32) -> const u8[:] {
     if biome == BIOME_BLACK_CUBE { return "I2 Menger Lattice"; }
     if biome == BIOME_ICE_WORLD { return "Glacial Spire"; }
     if biome == BIOME_DESERT_WORLD { return "Desert Pyramid"; }
+    if biome == BIOME_NOOB_FLOWER { return "Noob Flower"; }
+    if biome == BIOME_YING_LIBRARY { return "Ying Library"; }
+    if biome == BIOME_BOTANY_LAB { return "Botany Lab"; }
+    if biome == BIOME_BETA_CUBE { return "Beta Cube"; }
+    if biome == BIOME_RED_CAVES { return "Red Caves"; }
+    if biome == BIOME_I1_LIGHTHOUSE { return "I1 Lighthouse"; }
+    if biome == BIOME_I2_MOUNTAINS { return "I2 Mountains"; }
+    if biome == BIOME_BURLINGTON { return "Burlington"; }
+    if biome == BIOME_I3_ROOTS { return "I3 Root Matrix"; }
+    if biome == BIOME_PURPLE_HOUSE { return "Purple House"; }
+    if biome == BIOME_SINGLETON { return "The Singleton"; }
+    if biome == BIOME_ARCADE { return "Neon Arcade"; }
+    if biome == BIOME_TON618 { return "TON 618 Abyss"; }
+    if biome == BIOME_SOLAR_SYSTEM { return "Solar System"; }
     return "Inner Core";
 }
 
@@ -979,6 +1119,14 @@ fn block_label(b: u8) -> const u8[:] {
     if b == BLK_UPGRADE_STATION { return "Upgrade Station [USE]"; }
     if b == BLK_TOME { return "Xar Manual Tome [USE]"; }
     if b == BLK_LOCKED_DOOR { return "Locked Vault Door [USE: Key]"; }
+    if b == BLK_ARCADE_CAB { return "Neon Arcade Cabinet [USE]"; }
+    if b == BLK_QUICKSAND { return "Quicksand Trap (Slows & Damages!)"; }
+    if b == BLK_SOLAR_PLASMA { return "Solar Corona Plasma (Hazardous Heat!)"; }
+    if b == BLK_EVENT_HORIZON { return "TON 618 Event Horizon (Singularity Pull!)"; }
+    if b == BLK_CRYSTAL_CYAN { return "Cyan Crystal Cluster (Mineable)"; }
+    if b == BLK_CRYSTAL_PURPLE { return "Amethyst Crystal (Mineable)"; }
+    if b == BLK_BOOKSHELF { return "Ying Library Archive Shelf"; }
+    if b == BLK_BOTANY_TANK { return "Botanical Specimen Vat"; }
     if st.shrink_any != 0 { return "Solid Block (ShrinkAny ON: Fly/SHRK)"; }
     return "";
 }
@@ -1029,6 +1177,20 @@ fn block_base_rgb(b: u8) -> u32 {
     if b == BLK_UPG_SPEED { return pack_rgb(34, 211, 238); }
     if b == BLK_KEY_BLOCK { return pack_rgb(253, 224, 71); }
     if b == BLK_UPG_WEP { return pack_rgb(34, 230, 148); }
+    if b == BLK_QUICKSAND { return pack_rgb(206, 172, 92); }
+    if b == BLK_SOLAR_PLASMA { return pack_rgb(255, 132, 28); }
+    if b == BLK_LUNAR_REGOLITH { return pack_rgb(154, 162, 178); }
+    if b == BLK_CRYSTAL_CYAN { return pack_rgb(56, 240, 255); }
+    if b == BLK_CRYSTAL_PURPLE { return pack_rgb(192, 92, 255); }
+    if b == BLK_BOOKSHELF { return pack_rgb(156, 98, 54); }
+    if b == BLK_NEON_GRID { return pack_rgb(24, 244, 198); }
+    if b == BLK_EVENT_HORIZON { return pack_rgb(36, 12, 62); }
+    if b == BLK_BETA_TILE { return pack_rgb(84, 152, 248); }
+    if b == BLK_MYLANTIS_RED { return pack_rgb(204, 46, 58); }
+    if b == BLK_OBLIVION_BRICK { return pack_rgb(108, 42, 168); }
+    if b == BLK_ROOT_SOIL { return pack_rgb(88, 62, 42); }
+    if b == BLK_BOTANY_TANK { return pack_rgb(52, 224, 168); }
+    if b == BLK_ARCADE_CAB { return pack_rgb(255, 72, 212); }
     return pack_rgb(128, 128, 140);
 }
 
@@ -1159,7 +1321,7 @@ fn award_xp(amount: i32) {
         st.hp = st.max_hp;
         st.shields = st.max_shields;
         st.autosave_dirty = 1;
-        queue_sfx(SFX_PICKUP);
+        queue_sfx(SFX_LEVEL_UP);
         set_status_msg("LEVEL UP! +1 Dmg (all weapons), +20 MaxHP, +1 Regen", 2400);
     }
     if st.level >= 500 { st.xp = 0; }
@@ -1182,24 +1344,71 @@ fn pick_biome_for_entry(depth: i32, parent_blk: u8, forced_biome: i32, seed: u64
         if fallback_biome >= 0 { return fallback_biome; }
         return BIOME_YING_FOREST;
     }
-    if parent_blk == BLK_CORE_GATE { return BIOME_INNER_CORE; }
-    if parent_blk == BLK_WHITE_FLOWER || parent_blk == BLK_ALPHA_CUBE { return BIOME_WHITE_FLOWER; }
+    if parent_blk == BLK_CORE_GATE {
+        let cr = (splitmix64(seed) % 3) as! i32;
+        if cr == 1 { return BIOME_TON618; }
+        if cr == 2 && st.mut_no_singleton == 0 { return BIOME_SINGLETON; }
+        return BIOME_INNER_CORE;
+    }
+    if parent_blk == BLK_WHITE_FLOWER {
+        if (splitmix64(seed) % 3) == 0 { return BIOME_NOOB_FLOWER; }
+        return BIOME_WHITE_FLOWER;
+    }
+    if parent_blk == BLK_ALPHA_CUBE {
+        if (splitmix64(seed) % 2) == 0 { return BIOME_BETA_CUBE; }
+        return BIOME_WHITE_FLOWER;
+    }
     if parent_blk == BLK_FLOWER_Y_CORE { return BIOME_YELLOW_FLOWER; }
-    if parent_blk == BLK_YING_PLANET { return BIOME_YING_FOREST; }
-    if parent_blk == BLK_MYLANTIS_M { return BIOME_MYLANTIS; }
-    if parent_blk == BLK_ICE_WORLD { return BIOME_ICE_WORLD; }
-    if parent_blk == BLK_DESERT_WORLD { return BIOME_DESERT_WORLD; }
+    if parent_blk == BLK_YING_PLANET {
+        let yr = (splitmix64(seed) % 4) as! i32;
+        if yr == 1 { return BIOME_YING_LIBRARY; }
+        if yr == 2 { return BIOME_BOTANY_LAB; }
+        return BIOME_YING_FOREST;
+    }
+    if parent_blk == BLK_MYLANTIS_M {
+        if (splitmix64(seed) % 3) == 0 { return BIOME_RED_CAVES; }
+        return BIOME_MYLANTIS;
+    }
+    if parent_blk == BLK_ICE_WORLD {
+        if (splitmix64(seed) % 2) == 0 { return BIOME_I1_LIGHTHOUSE; }
+        return BIOME_ICE_WORLD;
+    }
+    if parent_blk == BLK_DESERT_WORLD {
+        if (splitmix64(seed) % 2) == 0 { return BIOME_BURLINGTON; }
+        return BIOME_DESERT_WORLD;
+    }
+    if parent_blk == BLK_INFINITY_RED {
+        let ir = (splitmix64(seed) % 4) as! i32;
+        if ir == 0 { return BIOME_I2_MOUNTAINS; }
+        if ir == 1 { return BIOME_I3_ROOTS; }
+        if ir == 2 { return BIOME_ARCADE; }
+        return BIOME_SOLAR_SYSTEM;
+    }
     if parent_blk == BLK_BLACK_CUBE {
         if depth == 1 { return BIOME_YING_FOREST; }
+        if (splitmix64(seed) % 4) == 0 { return BIOME_PURPLE_HOUSE; }
         return BIOME_BLACK_CUBE;
     }
     if depth == 1 { return BIOME_YING_FOREST; }
-    let r = (splitmix64(seed) % 6) as! i32;
+    let r = (splitmix64(seed) % 19) as! i32;
     if r == 0 { return BIOME_YING_FOREST; }
     if r == 1 { return BIOME_YELLOW_FLOWER; }
     if r == 2 { return BIOME_MYLANTIS; }
     if r == 3 { return BIOME_ICE_WORLD; }
     if r == 4 { return BIOME_DESERT_WORLD; }
+    if r == 5 { return BIOME_NOOB_FLOWER; }
+    if r == 6 { return BIOME_YING_LIBRARY; }
+    if r == 7 { return BIOME_BOTANY_LAB; }
+    if r == 8 { return BIOME_BETA_CUBE; }
+    if r == 9 { return BIOME_RED_CAVES; }
+    if r == 10 { return BIOME_I1_LIGHTHOUSE; }
+    if r == 11 { return BIOME_I2_MOUNTAINS; }
+    if r == 12 { return BIOME_BURLINGTON; }
+    if r == 13 { return BIOME_I3_ROOTS; }
+    if r == 14 { return BIOME_PURPLE_HOUSE; }
+    if r == 15 && st.mut_no_singleton == 0 { return BIOME_SINGLETON; }
+    if r == 16 { return BIOME_ARCADE; }
+    if r == 17 { return BIOME_SOLAR_SYSTEM; }
     return BIOME_BLACK_CUBE;
 }
 
@@ -2229,6 +2438,125 @@ fn generate_desert_world_blocks(dst: i32, seed: u64) {
     dst_set_block(dst, 5, 2, 11, BLK_HAZARD_NUKE);
 }
 
+fn generate_ext_biome_blocks(dst: i32, biome: i32, depth: i32, seed: u64) {
+    let _ = depth;
+    var ls = splitmix64(seed ^ ((biome as u64) * 0x9e3779b9));
+    // Outer shell with axial portals so neighboring sibling chunks stay traversable
+    var shell: u8 = BLK_STONE;
+    var floor_b: u8 = BLK_STONE;
+    var pillar_b: u8 = BLK_CRYSTAL_CYAN;
+    if biome == BIOME_NOOB_FLOWER {
+        shell = BLK_LEAVES; floor_b = BLK_GRASS; pillar_b = BLK_PETAL_W;
+    } else if biome == BIOME_YING_LIBRARY {
+        shell = BLK_BOOKSHELF; floor_b = BLK_WOOD; pillar_b = BLK_BOOKSHELF;
+    } else if biome == BIOME_BOTANY_LAB {
+        shell = BLK_GLASS; floor_b = BLK_ROOT_SOIL; pillar_b = BLK_BOTANY_TANK;
+    } else if biome == BIOME_BETA_CUBE {
+        shell = BLK_BETA_TILE; floor_b = BLK_ALPHA_CUBE; pillar_b = BLK_CRYSTAL_PURPLE;
+    } else if biome == BIOME_RED_CAVES {
+        shell = BLK_MYLANTIS_RED; floor_b = BLK_MYLANTIS_RED; pillar_b = BLK_CRYSTAL_PURPLE;
+    } else if biome == BIOME_I1_LIGHTHOUSE {
+        shell = BLK_WALL_TUT; floor_b = BLK_GLASS; pillar_b = BLK_CRYSTAL_CYAN;
+    } else if biome == BIOME_I2_MOUNTAINS {
+        shell = BLK_LUNAR_REGOLITH; floor_b = BLK_STONE; pillar_b = BLK_ICE;
+    } else if biome == BIOME_BURLINGTON {
+        shell = BLK_SAND; floor_b = BLK_QUICKSAND; pillar_b = BLK_WALL_TUT;
+    } else if biome == BIOME_I3_ROOTS {
+        shell = BLK_ROOT_SOIL; floor_b = BLK_ROOT_SOIL; pillar_b = BLK_WOOD;
+    } else if biome == BIOME_PURPLE_HOUSE {
+        shell = BLK_OBLIVION_BRICK; floor_b = BLK_OBLIVION_BRICK; pillar_b = BLK_CRYSTAL_PURPLE;
+    } else if biome == BIOME_SINGLETON {
+        shell = BLK_NEON_GRID; floor_b = BLK_BLACK_CUBE; pillar_b = BLK_CORE_GATE;
+    } else if biome == BIOME_ARCADE {
+        shell = BLK_NEON_GRID; floor_b = BLK_BETA_TILE; pillar_b = BLK_ARCADE_CAB;
+    } else if biome == BIOME_TON618 {
+        shell = BLK_EVENT_HORIZON; floor_b = BLK_EVENT_HORIZON; pillar_b = BLK_CRYSTAL_PURPLE;
+    } else if biome == BIOME_SOLAR_SYSTEM {
+        shell = BLK_GLASS; floor_b = BLK_SOLAR_PLASMA; pillar_b = BLK_SOLAR_PLASMA;
+    }
+
+    var y: i32 = 0;
+    while y < CHUNK_DIM {
+        var z: i32 = 0;
+        while z < CHUNK_DIM {
+            var x: i32 = 0;
+            while x < CHUNK_DIM {
+                let on_shell = x == 0 || x == 15 || y == 0 || y == 15 || z == 0 || z == 15;
+                let portal = (x >= 6 && x <= 9 && y >= 6 && y <= 9) ||
+                             (y >= 6 && y <= 9 && z >= 6 && z <= 9) ||
+                             (x >= 6 && x <= 9 && z >= 6 && z <= 9);
+                if on_shell && portal == false {
+                    dst_set_block(dst, x, y, z, shell);
+                } else if y == 1 && (x >= 2 && x <= 13) && (z >= 2 && z <= 13) {
+                    if biome == BIOME_BURLINGTON && ((x + z) % 5) == 0 {
+                        dst_set_block(dst, x, y, z, BLK_QUICKSAND);
+                    } else if biome == BIOME_SOLAR_SYSTEM && ((x * z) % 7) == 0 {
+                        dst_set_block(dst, x, y, z, BLK_SOLAR_PLASMA);
+                    } else if biome == BIOME_BETA_CUBE && ((x + z) & 1) == 0 {
+                        dst_set_block(dst, x, y, z, BLK_WHITE_FLOWER);
+                    } else {
+                        dst_set_block(dst, x, y, z, floor_b);
+                    }
+                }
+                x = x + 1;
+            }
+            z = z + 1;
+        }
+        y = y + 1;
+    }
+
+    // Corner architectural pillars & treasures
+    var p_y: i32 = 2;
+    while p_y <= 11 {
+        dst_set_block(dst, 3, p_y, 3, pillar_b);
+        dst_set_block(dst, 12, p_y, 3, pillar_b);
+        dst_set_block(dst, 3, p_y, 12, pillar_b);
+        dst_set_block(dst, 12, p_y, 12, pillar_b);
+        p_y = p_y + 1;
+    }
+
+    // Biome-specific centerpiece & interactive blocks
+    dst_set_block(dst, 8, 2, 13, BLK_TOME);
+    dst_set_block(dst, 5, 2, 12, BLK_MYSTERY_Q);
+    dst_set_block(dst, 10, 2, 12, BLK_UPG_WEP);
+    if biome == BIOME_ARCADE {
+        dst_set_block(dst, 8, 2, 8, BLK_ARCADE_CAB);
+        dst_set_block(dst, 6, 2, 8, BLK_BUY_STATION);
+        dst_set_block(dst, 10, 2, 8, BLK_UPGRADE_STATION);
+    } else if biome == BIOME_YING_LIBRARY {
+        dst_set_block(dst, 6, 2, 6, BLK_BOOKSHELF);
+        dst_set_block(dst, 9, 2, 6, BLK_SELL_STATION);
+        dst_set_block(dst, 8, 2, 10, BLK_UPG_DMG);
+    } else if biome == BIOME_BOTANY_LAB {
+        dst_set_block(dst, 7, 2, 8, BLK_BOTANY_TANK);
+        dst_set_block(dst, 9, 2, 8, BLK_UPG_REGEN);
+        dst_set_block(dst, 8, 2, 6, BLK_UPG_HP);
+    } else if biome == BIOME_RED_CAVES {
+        dst_set_block(dst, 8, 2, 8, BLK_TOPAZ_CHECK);
+        dst_set_block(dst, 6, 2, 10, BLK_SPAWNER);
+        dst_set_block(dst, 11, 2, 7, BLK_BLACK_MARKET);
+    } else if biome == BIOME_TON618 {
+        dst_set_block(dst, 8, 2, 10, BLK_CORE_GATE);
+        dst_set_block(dst, 5, 2, 5, BLK_HAZARD_NUKE);
+        dst_set_block(dst, 11, 2, 5, BLK_UPG_ROF);
+    } else if biome == BIOME_SINGLETON {
+        dst_set_block(dst, 8, 5, 8, BLK_ALPHA_CUBE);
+        dst_set_block(dst, 4, 2, 8, BLK_UPGRADE_STATION);
+        dst_set_block(dst, 12, 2, 8, BLK_BLACK_MARKET);
+    } else {
+        dst_set_block(dst, 8, 2, 8, BLK_INFINITY_RED);
+        dst_set_block(dst, 4, 2, 6, BLK_UPG_SPEED);
+        dst_set_block(dst, 12, 2, 6, BLK_UPG_ARMOR);
+    }
+    if (ls & 1) == 0 {
+        dst_set_block(dst, 4, 2, 10, BLK_GOLD_ORE);
+        dst_set_block(dst, 11, 2, 10, BLK_CRATE);
+    } else {
+        dst_set_block(dst, 4, 2, 10, BLK_TOPAZ_CHECK);
+        dst_set_block(dst, 11, 2, 10, BLK_KEY_BLOCK);
+    }
+}
+
 fn generate_interior_biome_blocks(dst: i32, biome: i32, depth: i32, seed: u64) {
     if biome == BIOME_BLACK_CUBE {
         generate_black_cube_blocks(dst, depth, seed);
@@ -2250,25 +2578,35 @@ fn generate_interior_biome_blocks(dst: i32, biome: i32, depth: i32, seed: u64) {
         generate_mylantis_blocks(dst, depth, seed);
         return;
     }
-    generate_inner_core_blocks(dst, depth, seed);
+    if biome == BIOME_INNER_CORE {
+        generate_inner_core_blocks(dst, depth, seed);
+        return;
+    }
+    generate_ext_biome_blocks(dst, biome, depth, seed);
 }
 
 fn populate_interior_biome_entities(biome: i32, depth: i32) {
     let _ = spawn_entity(ENT_RING_RED, 8.0, 12.2, 8.0, 1, -1, BLK_AIR);
     let _ = spawn_entity(ENT_RING_GREEN, 6.2, 3.5, 8.0, 1, -1, BLK_AIR);
     let _ = spawn_entity(ENT_RING_PINK, 10.2, 3.5, 6.2, 1, -1, BLK_AIR);
-
+    if biome == BIOME_SOLAR_SYSTEM || biome == BIOME_I1_LIGHTHOUSE {
+        let _ = spawn_entity(ENT_RING_BLUE, 4.2, 4.0, 4.2, 1, BIOME_ARCADE, BLK_INFINITY_RED);
+    } else if biome == BIOME_ARCADE {
+        let _ = spawn_entity(ENT_RING_DANGER, 12.2, 4.0, 12.2, 1, BIOME_TON618, BLK_CORE_GATE);
+    }
     if st.genesis_mode == 0 {
         let d_cap = clamp_i(depth, 1, 40);
         let scale_hp = 30 + d_cap * 18;
         if biome == BIOME_YELLOW_FLOWER {
             let _ = spawn_entity_ex(ENT_GOBLIN, 4.5, 3.0, 11.5, scale_hp, -1, 0, 1);
             let _ = spawn_entity_ex(ENT_RAT, 11.5, 3.0, 4.5, scale_hp - 8, -1, 0, 2);
-            if depth >= 3 {
-                let _ = spawn_entity_ex(ENT_PIRATE, 8.0, 7.5, 12.0, scale_hp + 15, -1, 0, 3);
-            }
-        } else if biome == BIOME_MYLANTIS || biome == BIOME_ICE_WORLD {
-            let _ = spawn_entity_ex(ENT_SPIDER, 4.5, 3.0, 11.5, scale_hp, -1, 0, 1);
+            let _ = spawn_entity_ex(ENT_YINYANG, 8.0, 5.5, 11.5, scale_hp + 20, -1, 0, 3);
+        } else if biome == BIOME_MYLANTIS {
+            let _ = spawn_entity_ex(ENT_MENACE, 4.5, 3.0, 11.5, scale_hp + 25, -1, 0, 1);
+            let _ = spawn_entity_ex(ENT_SPIDER, 11.5, 3.0, 4.5, scale_hp, -1, 0, 2);
+            let _ = spawn_entity_ex(ENT_BABY_SPIDER, 6.5, 3.0, 10.0, scale_hp / 2 + 12, -1, 0, 3);
+        } else if biome == BIOME_ICE_WORLD {
+            let _ = spawn_entity_ex(ENT_YINYANG, 4.5, 3.0, 11.5, scale_hp, -1, 0, 1);
             let _ = spawn_entity_ex(ENT_MARINE, 5.5, 5.5, 5.5, scale_hp + 15, -1, 0, 2);
             let _ = spawn_entity_ex(ENT_DEMON, 11.5, 3.5, 11.5, scale_hp + 30, -1, 0, 3);
         } else if biome == BIOME_DESERT_WORLD {
@@ -2278,16 +2616,42 @@ fn populate_interior_biome_entities(biome: i32, depth: i32) {
             let _ = spawn_entity_ex(ENT_GUARDIAN, 6.5, 5.0, 9.5, scale_hp + 85, -1, 0, 1);
             let _ = spawn_entity_ex(ENT_DEMON, 9.5, 3.5, 6.5, scale_hp + 45, -1, 0, 2);
             let _ = spawn_entity_ex(ENT_MENACE, 12.0, 8.5, 12.0, scale_hp + 30, -1, 0, 3);
+        } else if biome == BIOME_NOOB_FLOWER || biome == BIOME_BOTANY_LAB {
+            let _ = spawn_entity_ex(ENT_TWEEDLE, 4.8, 3.5, 10.5, scale_hp, -1, 0, 1);
+            let _ = spawn_entity_ex(ENT_GNAT, 11.2, 6.2, 5.2, scale_hp - 10, -1, 0, 2);
+            let _ = spawn_entity_ex(ENT_GROWER, 8.0, 4.5, 11.0, scale_hp + 30, -1, 0, 3);
+        } else if biome == BIOME_YING_LIBRARY || biome == BIOME_BETA_CUBE {
+            let _ = spawn_entity_ex(ENT_BEHOLDER, 5.5, 6.0, 10.5, scale_hp + 40, -1, 0, 1);
+            let _ = spawn_entity_ex(ENT_SLIVER, 10.5, 3.8, 10.5, scale_hp + 25, -1, 0, 2);
+            let _ = spawn_entity_ex(ENT_SHRINKER, 5.0, 4.0, 5.0, scale_hp + 10, -1, 0, 3);
+        } else if biome == BIOME_RED_CAVES || biome == BIOME_BURLINGTON {
+            let _ = spawn_entity_ex(ENT_LAMPREY, 5.2, 3.8, 11.2, scale_hp + 20, -1, 0, 1);
+            let _ = spawn_entity_ex(ENT_BURLY, 10.8, 3.5, 11.0, scale_hp + 60, -1, 0, 2);
+            let _ = spawn_entity_ex(ENT_ROCKET_SPIDER, 8.0, 5.0, 12.0, scale_hp + 50, -1, 0, 3);
+        } else if biome == BIOME_I1_LIGHTHOUSE || biome == BIOME_I2_MOUNTAINS || biome == BIOME_I3_ROOTS {
+            let _ = spawn_entity_ex(ENT_HEX_SENTRY, 5.0, 6.5, 10.5, scale_hp + 55, -1, 0, 1);
+            let _ = spawn_entity_ex(ENT_HYDRA, 10.5, 4.5, 10.5, scale_hp + 95, -1, 0, 2);
+        } else if biome == BIOME_PURPLE_HOUSE || biome == BIOME_SINGLETON || biome == BIOME_SOLAR_SYSTEM {
+            let _ = spawn_entity_ex(ENT_VULCAN, 5.0, 4.5, 11.0, scale_hp + 80, -1, 0, 1);
+            let _ = spawn_entity_ex(ENT_BEHOLDER, 11.0, 7.0, 11.0, scale_hp + 55, -1, 0, 2);
+        } else if biome == BIOME_ARCADE {
+            let _ = spawn_entity_ex(ENT_ARCADE_DRONE, 5.0, 5.0, 10.5, scale_hp + 30, -1, 0, 1);
+            let _ = spawn_entity_ex(ENT_ARCADE_DRONE, 11.0, 6.0, 10.5, scale_hp + 30, -1, 0, 2);
+        } else if biome == BIOME_TON618 {
+            let _ = spawn_entity_ex(ENT_TON618_BOSS, 8.0, 7.0, 11.5, 460 + d_cap * 48, -1, 0, 10);
+            let _ = spawn_entity_ex(ENT_BEHOLDER, 4.2, 4.2, 10.5, scale_hp + 70, -1, 0, 11);
         } else {
             let _ = spawn_entity_ex(ENT_SINGULARITY, 8.0, 6.8, 11.8, 320 + d_cap * 35, -1, 0, 10);
             let _ = spawn_entity_ex(ENT_GUARDIAN, 4.2, 3.2, 11.5, scale_hp + 70, -1, 0, 11);
         }
+        if st.mut_double_monsters != 0 {
+            let _ = spawn_entity_ex(ENT_GNAT, 6.0, 7.5, 11.0, scale_hp, -1, 0, 14);
+            let _ = spawn_entity_ex(ENT_BURLY, 10.0, 3.2, 11.5, scale_hp + 45, -1, 0, 15);
+        }
     }
-
     if biome == BIOME_INNER_CORE && st.k_rescued == 0 {
         let _ = spawn_entity(ENT_FRIEND_K, 8.0, 3.0, 13.6, 1, -1, 0);
     }
-
     let _ = spawn_entity_ex(ENT_GOLD, 6.5, 3.0, 5.5, 1, -1, 0, 6);
     let _ = spawn_entity_ex(ENT_AMMO, 4.0, 3.0, 8.0, 1, -1, 0, 7);
     let _ = spawn_entity_ex(ENT_HEALTH, 8.0, 3.0, 3.5, 1, -1, 0, 8);
@@ -3423,18 +3787,18 @@ fn grow_in_place() {
 // Init, Respawn & Reset
 // ---------------------------------------------------------------------------
 fn set_default_ammo_caps() {
-    // Authentic Xar caps (manual section 9): base + per-capacity-upgrade bonus.
+    // Authentic Xar caps (manual section 9): base + global + per-weapon capacity bonuses.
     let l = st.ammo_cap_lvl - 1;
-    st.max_ammo[WEP_PLASMA] = 40 + 10 * l;
-    st.max_ammo[WEP_CANNON] = 100 + 5 * l;
-    st.max_ammo[WEP_LASER] = 32 + 8 * l;
-    st.max_ammo[WEP_ROCKET] = 20 + 4 * l;
-    st.max_ammo[WEP_HOMING] = 200 + 10 * l;
-    st.max_ammo[WEP_MINIGUN] = 48 + 12 * l;
-    st.max_ammo[WEP_RAILGUN] = 48 + 12 * l;
-    st.max_ammo[WEP_EMP] = 2 + l;
-    st.max_ammo[WEP_NUKE] = 1 + l;
-    st.max_ammo[WEP_DARKHOLE] = 1 + l;
+    st.max_ammo[WEP_PLASMA] = 40 + 10 * (l + st.wep_cap_lvl[WEP_PLASMA]);
+    st.max_ammo[WEP_CANNON] = 100 + 5 * (l + st.wep_cap_lvl[WEP_CANNON]);
+    st.max_ammo[WEP_LASER] = 32 + 8 * (l + st.wep_cap_lvl[WEP_LASER]);
+    st.max_ammo[WEP_ROCKET] = 20 + 4 * (l + st.wep_cap_lvl[WEP_ROCKET]);
+    st.max_ammo[WEP_HOMING] = 200 + 10 * (l + st.wep_cap_lvl[WEP_HOMING]);
+    st.max_ammo[WEP_MINIGUN] = 48 + 12 * (l + st.wep_cap_lvl[WEP_MINIGUN]);
+    st.max_ammo[WEP_RAILGUN] = 48 + 12 * (l + st.wep_cap_lvl[WEP_RAILGUN]);
+    st.max_ammo[WEP_EMP] = 2 + l + st.wep_cap_lvl[WEP_EMP];
+    st.max_ammo[WEP_NUKE] = 1 + l + st.wep_cap_lvl[WEP_NUKE];
+    st.max_ammo[WEP_DARKHOLE] = 1 + l + st.wep_cap_lvl[WEP_DARKHOLE];
     var wi: i32 = 0;
     while wi < NUM_WEAPONS {
         if st.ammo[wi] > st.max_ammo[wi] { st.ammo[wi] = st.max_ammo[wi]; }
@@ -3442,10 +3806,10 @@ fn set_default_ammo_caps() {
     }
 }
 
-// Derived caps from B (= basic max health): max shield 25 + health level,
+// Derived caps from B (= basic max health): max shield 25 + health level + shield_cap_lvl,
 // max armor 10B. Call after any max_hp change.
 fn refresh_derived() {
-    st.max_shields = 25 + ((st.max_hp - 100) / 4);
+    st.max_shields = 25 + ((st.max_hp - 100) / 4) + st.shield_cap_lvl * 10;
     st.max_armor = 10 * st.max_hp;
     if st.shields > st.max_shields { st.shields = st.max_shields; }
     if st.armor > st.max_armor { st.armor = st.max_armor; }
@@ -3554,6 +3918,28 @@ fn init_new_game() {
     st.rof_lvl = 1;
     st.spd_lvl = 1;
     st.ammo_cap_lvl = 1;
+    i = 0;
+    while i < NUM_WEAPONS {
+        st.wep_dmg_lvl[i] = 0;
+        st.wep_rof_lvl[i] = 0;
+        st.wep_cap_lvl[i] = 0;
+        st.wep_vel_lvl[i] = 0;
+        i = i + 1;
+    }
+    st.plasma_regen_lvl = 0;
+    st.emp_rad_lvl = 0;
+    st.shield_cap_lvl = 0;
+    i = 0;
+    while i < 40 { st.enemy_kills[i] = 0; i = i + 1; }
+    st.hazard_cd_ms = 0;
+    st.arcade_score = 0;
+    st.arcade_timer_ms = 0;
+    st.arcade_target = 0;
+    st.arcade_hits = 0;
+    st.arcade_active = 0;
+    i = 0;
+    while i < 32 { st.blk_hp_seed[i] = 0; st.blk_hp_val[i] = 0; i = i + 1; }
+    st.blk_hp_head = 0;
     set_default_ammo_caps();
 
     st.weapon = WEP_PLASMA;
@@ -3602,6 +3988,26 @@ fn init_new_game() {
 }
 
 fn respawn_at_tutorial_preserving_progress() {
+    if st.icarus_mode != 0 {
+        let keep_grid = st.show_chunk_grid;
+        let keep_mut_m = st.mut_double_monsters;
+        let keep_mut_s = st.mut_no_singleton;
+        let keep_mut_k = st.mut_inf_markers;
+        let keep_best = st.arcade_best;
+        init_new_game();
+        st.icarus_mode = 1;
+        st.show_chunk_grid = keep_grid;
+        st.mut_double_monsters = keep_mut_m;
+        st.mut_no_singleton = keep_mut_s;
+        st.mut_inf_markers = keep_mut_k;
+        st.arcade_best = keep_best;
+        st.deaths = 1;
+        st.flash_ms = 500;
+        st.flash_rgb = pack_rgb(240, 30, 40);
+        queue_sfx(SFX_HURT);
+        set_status_msg("ICARUS PERMADEATH: Hull lost! Entire run reset!", 4000);
+        return;
+    }
     // Authentic FBW death rule: lose 30 gold & Short Marker, keep armor as-is (no free grant), keep Long Markers/weapons!
     st.deaths = st.deaths + 1;
     st.gold = if st.gold >= DEATH_GOLD_PENALTY { st.gold - DEATH_GOLD_PENALTY } else { 0 };
@@ -3692,47 +4098,55 @@ fn collect_upgrade_block(bx: i32, by: i32, bz: i32, blk: u8) {
         st.shields = st.max_shields;
         set_status_msg("UPGRADE: Armor topped to 100% & Shields recharged!", 2200);
     } else if blk == BLK_UPG_DMG {
-        st.dmg_lvl = st.dmg_lvl + 1;
-        set_status_msg("UPGRADE: +20% Weapon Damage!", 2200);
+        let bonus: i32 = if st.depth >= 12 { 2 } else { 1 };
+        st.dmg_lvl = st.dmg_lvl + bonus;
+        st.wep_dmg_lvl[st.weapon] = st.wep_dmg_lvl[st.weapon] + 1;
+        set_status_msg(if bonus > 1 { "BEYOND MAX UPGRADE: +40% Dmg & +Active Wep Dmg!" } else { "UPGRADE: +20% Weapon Damage!" }, 2200);
     } else if blk == BLK_UPG_ROF {
         st.rof_lvl = st.rof_lvl + 1;
-        set_status_msg("UPGRADE: +15% Fire Rate!", 2200);
+        st.wep_rof_lvl[st.weapon] = st.wep_rof_lvl[st.weapon] + 1;
+        set_status_msg("UPGRADE: +15% Fire Rate & Active Wep RoF!", 2200);
     } else if blk == BLK_UPG_AMMO {
         st.ammo_cap_lvl = st.ammo_cap_lvl + 1;
+        st.plasma_regen_lvl = st.plasma_regen_lvl + 1;
         set_default_ammo_caps();
         st.ammo[WEP_PLASMA] = st.max_ammo[WEP_PLASMA];
-        set_status_msg("UPGRADE: +35% Max Ammo & Plasma Cap!", 2200);
+        set_status_msg("UPGRADE: +Max Ammo & Faster Plasma Recharge!", 2200);
     } else if blk == BLK_UPG_SPEED {
         st.spd_lvl = st.spd_lvl + 1;
-        set_status_msg("UPGRADE: +12% Flight Thrust!", 2200);
+        st.wep_vel_lvl[st.weapon] = st.wep_vel_lvl[st.weapon] + 1;
+        set_status_msg("UPGRADE: +12% Thrust & Projectile Velocity!", 2200);
     } else if blk == BLK_KEY_BLOCK {
         st.keys = st.keys + 1;
         set_status_msg("Picked up Vault Key!", 2000);
     } else if blk == BLK_UPG_WEP {
         let cb = cur_biome();
-        if cb == BIOME_YING_FOREST {
+        if cb == BIOME_YING_FOREST || cb == BIOME_NOOB_FLOWER {
             st.wep_unlocked[WEP_CANNON] = 1;
             st.wep_unlocked[WEP_LASER] = 1;
-            award_trophy(2, "TROPHY: Ying Forest Arsenal (Cannon & Laser)!");
-        } else if cb == BIOME_WHITE_FLOWER {
+            award_trophy_id(1, "TROPHY: Ying Forest Arsenal (Cannon & Laser)!");
+        } else if cb == BIOME_WHITE_FLOWER || cb == BIOME_BETA_CUBE || cb == BIOME_YING_LIBRARY || cb == BIOME_BOTANY_LAB {
             st.wep_unlocked[WEP_MINIGUN] = 1;
-            award_trophy(4, "TROPHY: Alpha Cube Arsenal (6:Minigun)!");
-        } else if cb == BIOME_YELLOW_FLOWER {
+            award_trophy_id(2, "TROPHY: Alpha/Botany Arsenal (6:Minigun)!");
+        } else if cb == BIOME_YELLOW_FLOWER || cb == BIOME_ARCADE {
             st.wep_unlocked[WEP_ROCKET] = 1;
             st.wep_unlocked[WEP_HOMING] = 1;
-            award_trophy(8, "TROPHY: Yellow Flower Arsenal (Rocket & Homing)!");
-        } else if cb == BIOME_MYLANTIS || cb == BIOME_ICE_WORLD || cb == BIOME_DESERT_WORLD {
+            award_trophy_id(3, "TROPHY: Yellow Flower Arsenal (Rocket & Homing)!");
+        } else if cb == BIOME_MYLANTIS || cb == BIOME_ICE_WORLD || cb == BIOME_DESERT_WORLD ||
+                  cb == BIOME_RED_CAVES || cb == BIOME_I1_LIGHTHOUSE || cb == BIOME_BURLINGTON {
             st.wep_unlocked[WEP_RAILGUN] = 1;
             st.wep_unlocked[WEP_EMP] = 1;
-            award_trophy(16, "TROPHY: Deep Caves Arsenal (Railgun & EMP)!");
-        } else if cb == BIOME_BLACK_CUBE && st.depth < 6 {
+            award_trophy_id(4, "TROPHY: Deep Caves Arsenal (Railgun & EMP)!");
+        } else if (cb == BIOME_BLACK_CUBE || cb == BIOME_I2_MOUNTAINS || cb == BIOME_I3_ROOTS) && st.depth < 6 {
             st.wep_unlocked[WEP_RAILGUN] = 1;
             st.wep_unlocked[WEP_EMP] = 1;
             set_status_msg("MENGER MODULE: Unlocked 7:Railgun & 8:EMP!", 2400);
         } else {
             st.wep_unlocked[WEP_NUKE] = 1;
             st.wep_unlocked[WEP_DARKHOLE] = 1;
-            set_status_msg("CORE ARSENAL: Unlocked 9:Nuke & 0:DarkHole!", 2400);
+            st.wep_dmg_lvl[WEP_NUKE] = st.wep_dmg_lvl[WEP_NUKE] + 1;
+            st.wep_dmg_lvl[WEP_DARKHOLE] = st.wep_dmg_lvl[WEP_DARKHOLE] + 1;
+            set_status_msg("BEYOND MAX CORE ARSENAL: Unlocked Nuke & DarkHole!", 2400);
         }
     }
 }
@@ -4214,15 +4628,59 @@ fn break_block_at(bx: i32, by: i32, bz: i32) {
         let _ = spawn_entity(ENT_GOLD, cx, cy, cz, 1, -1, 0);
         queue_sfx(SFX_PICKUP);
         set_status_msg("Topaz Mineral mined! +25 Gold & +120 XP!", 1600);
+    } else if b == BLK_CRYSTAL_CYAN || b == BLK_CRYSTAL_PURPLE {
+        st.score_xp = st.score_xp + 75;
+        add_gold(18);
+        let _ = spawn_entity(ENT_HEALTH, cx, cy, cz, 6, -1, 0); // shield charge
+        queue_sfx(SFX_PICKUP);
+        set_status_msg("Crystal cluster harvested! +18 Gold & Shield orb!", 1400);
+    }
+}
+
+fn damage_block_at(bx: i32, by: i32, bz: i32, dmg_in: i32) {
+    let b = get_block(bx, by, bz);
+    if is_block_destructible(b) == 0 { return; }
+    if b != BLK_TOPAZ_CHECK && b != BLK_SPAWNER {
+        break_block_at(bx, by, bz);
+        return;
+    }
+    let sd = cur_seed();
+    var slot: i32 = -1;
+    var i: i32 = 0;
+    while i < 32 {
+        if st.blk_hp_seed[i] == sd && st.blk_hp_x[i] == bx && st.blk_hp_y[i] == by && st.blk_hp_z[i] == bz && st.blk_hp_val[i] > 0 {
+            slot = i;
+            break;
+        }
+        i = i + 1;
+    }
+    if slot < 0 {
+        slot = st.blk_hp_head;
+        st.blk_hp_head = (st.blk_hp_head + 1) % 32;
+        st.blk_hp_seed[slot] = sd;
+        st.blk_hp_x[slot] = bx;
+        st.blk_hp_y[slot] = by;
+        st.blk_hp_z[slot] = bz;
+        st.blk_hp_val[slot] = if b == BLK_TOPAZ_CHECK { 120 } else { 80 };
+    }
+    let eff = if dmg_in > 0 { dmg_in } else { 24 };
+    st.blk_hp_val[slot] = st.blk_hp_val[slot] - eff;
+    spawn_burst((bx as f64) + 0.5, (by as f64) + 0.5, (bz as f64) + 0.5, block_base_rgb(b), 5);
+    if st.blk_hp_val[slot] <= 0 {
+        st.blk_hp_val[slot] = 0;
+        st.blk_hp_seed[slot] = 0;
+        break_block_at(bx, by, bz);
+    } else {
+        queue_sfx(SFX_CLICK);
     }
 }
 
 fn damage_entity(idx: i32, dmg: i32, stun_ms: i32) {
     if st.entities[idx].active == 0 { return; }
     let k = st.entities[idx].kind;
-    if k < ENT_RAT || k > ENT_SINGULARITY { return; }
+    if is_enemy_kind(k) == 0 { return; }
     st.dps_accum = st.dps_accum + dmg;
-    if stun_ms > 0 {
+    if stun_ms > 0 && is_enemy_freeze_immune(k) == 0 {
         let eff_stun = if st.entities[idx].freeze_ms > 0 { stun_ms / 2 } else { stun_ms };
         if eff_stun > st.entities[idx].freeze_ms {
             st.entities[idx].freeze_ms = eff_stun;
@@ -4233,16 +4691,23 @@ fn damage_entity(idx: i32, dmg: i32, stun_ms: i32) {
     if st.entities[idx].hp <= 0 {
         st.entities[idx].active = 0;
         st.kills = st.kills + 1;
+        if k >= 0 && k < 40 {
+            st.enemy_kills[k] = st.enemy_kills[k] + 1;
+        }
         let base_xp: i32 =
             if k == ENT_SINGULARITY { 2000 }
-            else if k == ENT_GUARDIAN { 120 }
+            else if k == ENT_TON618_BOSS { 3500 }
+            else if k == ENT_HYDRA { 180 }
+            else if k == ENT_GUARDIAN || k == ENT_VULCAN { 120 }
+            else if k == ENT_BURLY || k == ENT_ROCKET_SPIDER { 85 }
+            else if k == ENT_HEX_SENTRY || k == ENT_BEHOLDER { 70 }
             else if k == ENT_MENACE { 60 }
-            else if k == ENT_DEMON { 45 }
-            else if k == ENT_YINYANG { 30 }
-            else if k == ENT_PIRATE { 26 }
-            else if k == ENT_MARINE { 22 }
-            else if k == ENT_GOON { 16 }
-            else if k == ENT_SPIDER { 14 }
+            else if k == ENT_DEMON || k == ENT_SLIVER { 45 }
+            else if k == ENT_YINYANG || k == ENT_GROWER { 32 }
+            else if k == ENT_PIRATE || k == ENT_LAMPREY { 26 }
+            else if k == ENT_MARINE || k == ENT_ARCADE_DRONE { 24 }
+            else if k == ENT_GOON || k == ENT_TWEEDLE { 16 }
+            else if k == ENT_SPIDER || k == ENT_SHRINKER { 14 }
             else { 12 };
         award_xp(base_xp + (if st.depth > 0 { st.depth * 5 } else { 0 }));
         mark_entity_cleared(cur_seed(), st.entities[idx].slot_id);
@@ -4251,8 +4716,8 @@ fn damage_entity(idx: i32, dmg: i32, stun_ms: i32) {
         let ez = st.entities[idx].z;
         spawn_burst(ex, ey, ez, pack_rgb(255, 210, 70), 14);
         let _ = spawn_entity(ENT_GOLD, ex, ey, ez, 1, -1, 0);
-        if k == ENT_GOON || k == ENT_MARINE || k == ENT_PIRATE {
-            let _ = spawn_entity(ENT_AMMO, ex + 0.25, ey, ez, 1, -1, 0);
+        if k == ENT_GOON || k == ENT_MARINE || k == ENT_PIRATE || k == ENT_HEX_SENTRY || k == ENT_ARCADE_DRONE {
+            let _ = spawn_entity(ENT_AMMO, ex + 0.25, ey, ez, 1 + ((rng_u32() % 6) as! i32), -1, 0);
         }
         if k == ENT_SINGULARITY {
             st.singularity_defeated = 1;
@@ -4261,7 +4726,14 @@ fn damage_entity(idx: i32, dmg: i32, stun_ms: i32) {
             add_gold(500);
             let _ = spawn_entity(ENT_ARMOR, ex + 0.4, ey, ez, 3, -1, 0);   // gold armor (2B)
             let _ = spawn_entity(ENT_HEALTH, ex - 0.4, ey, ez, 4, -1, 0);  // health to 2B
-            award_trophy(32, "TROPHY: THE SINGULARITY DEFEATED! Quasar Drive Unlocked — Rescue [K]!");
+            award_trophy_id(5, "TROPHY: THE SINGULARITY DEFEATED! Quasar Drive Unlocked — Rescue [K]!");
+        } else if k == ENT_TON618_BOSS {
+            st.quasar_drive = 1;
+            st.autosave_dirty = 1;
+            add_gold(1200);
+            let _ = spawn_entity(ENT_ARMOR, ex + 0.4, ey, ez, 5, -1, 0);   // jade armor (10B)
+            let _ = spawn_entity(ENT_HEALTH, ex - 0.4, ey, ez, 5, -1, 0);  // megahealth (5B)
+            award_trophy_id(7, "TROPHY: TON 618 SUPERMASSIVE CONQUERED! Jade Armor & Quasar!");
         } else if (rng_u32() % 3) == 0 {
             let tier = 1 + (rng_u32() % 3) as! i32;   // small / medium / to-full
             let _ = spawn_entity(ENT_HEALTH, ex + 0.3, ey, ez, tier, -1, 0);
@@ -4271,6 +4743,7 @@ fn damage_entity(idx: i32, dmg: i32, stun_ms: i32) {
 
 // Freeze Ray style stacking freeze (manual 9.4: re-hits extend freeze time).
 fn stack_freeze(idx: i32, add_ms: i32) {
+    if is_enemy_freeze_immune(st.entities[idx].kind) != 0 { return; }
     st.entities[idx].freeze_ms = clamp_i(st.entities[idx].freeze_ms + add_ms, 0, 20000);
 }
 
@@ -4288,7 +4761,7 @@ fn shot_explode(x: f64, y: f64, z: f64, sw: i32, smode: i32, sdmg: i32, rgb: u32
         return 1;
     }
     if sw == WEP_EMP {
-        explosion_at(x, y, z, 7.0, sdmg, 4000, 0, rgb, exclude_idx, 0);
+        explosion_at(x, y, z, 7.0 + (st.emp_rad_lvl as f64) * 1.2, sdmg, 4000, 0, rgb, exclude_idx, 0);
         return 1;
     }
     if sw == WEP_NUKE {
@@ -4308,7 +4781,7 @@ fn explosion_at(x: f64, y: f64, z: f64, rad: f64, dmg: i32, stun_ms: i32, pull_i
     queue_sfx(if stun_ms > 0 { SFX_EMP } else { SFX_EXPLODE });
     var i: i32 = 0;
     while i < MAX_ENTITIES {
-        if i != exclude_idx && st.entities[i].active != 0 && st.entities[i].kind >= ENT_RAT && st.entities[i].kind <= ENT_SINGULARITY {
+        if i != exclude_idx && st.entities[i].active != 0 && is_enemy_kind(st.entities[i].kind) != 0 {
             let dx = st.entities[i].x - x;
             let dy = st.entities[i].y - y;
             let dz = st.entities[i].z - z;
@@ -4325,7 +4798,7 @@ fn explosion_at(x: f64, y: f64, z: f64, rad: f64, dmg: i32, stun_ms: i32, pull_i
                     var rank: i32 = 0;
                     var j: i32 = 0;
                     while j < MAX_ENTITIES {
-                        if j != i && st.entities[j].active != 0 && st.entities[j].kind >= ENT_RAT && st.entities[j].kind <= ENT_SINGULARITY {
+                        if j != i && st.entities[j].active != 0 && is_enemy_kind(st.entities[j].kind) != 0 {
                             let jx = st.entities[j].x - x;
                             let jy = st.entities[j].y - y;
                             let jz = st.entities[j].z - z;
@@ -4353,7 +4826,7 @@ fn explosion_at(x: f64, y: f64, z: f64, rad: f64, dmg: i32, stun_ms: i32, pull_i
             while bx <= cx + ir {
                 if bx >= 0 && bx < 16 && by >= 0 && by < 16 && bz >= 0 && bz < 16 {
                     if is_block_destructible(get_block(bx, by, bz)) != 0 {
-                        break_block_at(bx, by, bz);
+                        damage_block_at(bx, by, bz, if dmg > 0 { dmg } else { 50 });
                     }
                 }
                 bx = bx + 1;
@@ -4398,8 +4871,9 @@ fn fire_weapon(secondary: i32) {
     var dz: f64 = 0.0;
     camera_forward(dx, dy, dz);
 
-    let rof_mul = 1.0 / (1.0 + 0.15 * ((st.rof_lvl - 1) as f64));
-    let dmg_mul = 1.0 + 0.20 * ((st.dmg_lvl - 1) as f64);
+    let rof_mul = 1.0 / (1.0 + 0.15 * (((st.rof_lvl - 1) + st.wep_rof_lvl[w]) as f64));
+    let dmg_mul = 1.0 + 0.20 * (((st.dmg_lvl - 1) + st.wep_dmg_lvl[w]) as f64);
+    let vel_mul = 1.0 + 0.15 * (st.wep_vel_lvl[w] as f64);
 
     // Per-weapon per-mode ammo cost (authentic Xar manual, section 9).
     var cost: i32 = 1;
@@ -4497,7 +4971,7 @@ fn fire_weapon(secondary: i32) {
                 if is_block_solid(blk) != 0 {
                     end_x = hx; end_y = hy; end_z = hz;
                     if bx >= 0 && bx < 16 && by >= 0 && by < 16 && bz >= 0 && bz < 16 && is_block_destructible(blk) != 0 {
-                        break_block_at(bx, by, bz);
+                        damage_block_at(bx, by, bz, dmg);
                     } else {
                         spawn_burst(hx, hy, hz, col, 5);
                     }
@@ -4505,7 +4979,7 @@ fn fire_weapon(secondary: i32) {
                 }
                 var ei: i32 = 0;
                 while ei < MAX_ENTITIES {
-                    if st.entities[ei].active != 0 && st.entities[ei].kind >= ENT_RAT && st.entities[ei].kind <= ENT_SINGULARITY {
+                    if st.entities[ei].active != 0 && is_enemy_kind(st.entities[ei].kind) != 0 {
                         let ex = st.entities[ei].x - hx;
                         let ey = st.entities[ei].y - hy;
                         let ez = st.entities[ei].z - hz;
@@ -4527,18 +5001,18 @@ fn fire_weapon(secondary: i32) {
             st.beam_z1 = st.pz + dz * 0.45;
             st.beam_x2 = end_x; st.beam_y2 = end_y; st.beam_z2 = end_z;
         } else if mode == 5 {
-            // Flare: no damage — lights the way when it is pitch black.
+            // Flare: launches a glowing light projectile that sticks as an ENT_FLARE beacon!
             st.fire_cd_ms = (250.0 * rof_mul) as! i32;
             queue_sfx(SFX_PLASMA);
             spawn_shot(1, w, 5, st.px + dx * 0.4, st.py + dy * 0.4, st.pz + dz * 0.4,
-                dx * 60.0, dy * 60.0, dz * 60.0, 0, 2600, pack_rgb(255, 236, 150));
+                dx * 22.0 * vel_mul, dy * 22.0 * vel_mul, dz * 22.0 * vel_mul, 0, 2600, pack_rgb(255, 236, 150));
         } else {
             // Basic High DPA
             st.fire_cd_ms = (190.0 * rof_mul) as! i32;
             queue_sfx(SFX_PLASMA);
             let dmg = (24.0 * dmg_mul) as! i32;
             spawn_shot(1, w, 0, st.px + dx * 0.4, st.py + dy * 0.4, st.pz + dz * 0.4,
-                dx * 17.5, dy * 17.5, dz * 17.5, dmg, 1450, pack_rgb(56, 224, 255));
+                dx * 17.5 * vel_mul, dy * 17.5 * vel_mul, dz * 17.5 * vel_mul, dmg, 1450, pack_rgb(56, 224, 255));
         }
         return;
     }
@@ -4559,7 +5033,7 @@ fn fire_weapon(secondary: i32) {
         if mode == 1 {
             // Blunderbuss: 4-ball spread volley
             st.fire_cd_ms = (420.0 * rof_mul) as! i32;
-            queue_sfx(SFX_EXPLODE);
+            queue_sfx(SFX_CANNON);
             let dmg = (19.0 * dmg_mul) as! i32;
             var s: i32 = 0;
             while s < 4 {
@@ -4568,37 +5042,37 @@ fn fire_weapon(secondary: i32) {
                 let sx = cp * fcos(syaw);
                 let sz = cp * fsin(syaw);
                 spawn_shot(1, w, 1, st.px + sx * 0.4, st.py + dy * 0.4, st.pz + sz * 0.4,
-                    sx * 16.5, dy * 16.5, sz * 16.5, dmg, 1300, pack_rgb(255, 184, 68));
+                    sx * 16.5 * vel_mul, dy * 16.5 * vel_mul, sz * 16.5 * vel_mul, dmg, 1300, pack_rgb(255, 184, 68));
                 s = s + 1;
             }
         } else if mode == 2 {
             // Tommy Gun: twice the Blunderbuss rate, ball = 3x the volley total.
             st.fire_cd_ms = (210.0 * rof_mul) as! i32;
-            queue_sfx(SFX_PLASMA);
+            queue_sfx(SFX_CANNON);
             let dmg = (228.0 * dmg_mul) as! i32;
             spawn_shot(1, w, 2, st.px + dx * 0.4, st.py + dy * 0.4, st.pz + dz * 0.4,
-                dx * 21.0, dy * 21.0, dz * 21.0, dmg, 1500, pack_rgb(255, 198, 72));
+                dx * 21.0 * vel_mul, dy * 21.0 * vel_mul, dz * 21.0 * vel_mul, dmg, 1500, pack_rgb(255, 198, 72));
         } else if mode == 3 {
             // The Sheriff: 10x damage, 1 shot per second, chains on kill.
             st.fire_cd_ms = (1000.0 * rof_mul) as! i32;
-            queue_sfx(SFX_EXPLODE);
+            queue_sfx(SFX_CANNON);
             let dmg = (500.0 * dmg_mul) as! i32;
             spawn_shot(1, w, 3, st.px + dx * 0.4, st.py + dy * 0.4, st.pz + dz * 0.4,
-                dx * 16.5, dy * 16.5, dz * 16.5, dmg, 1600, pack_rgb(255, 120, 40));
+                dx * 16.5 * vel_mul, dy * 16.5 * vel_mul, dz * 16.5 * vel_mul, dmg, 1600, pack_rgb(255, 120, 40));
         } else if mode == 4 {
             // The Judge: 100x damage, 1 shot per 5 seconds, chains on kill.
             st.fire_cd_ms = (5000.0 * rof_mul) as! i32;
-            queue_sfx(SFX_EXPLODE);
+            queue_sfx(SFX_CANNON);
             let dmg = (5000.0 * dmg_mul) as! i32;
             spawn_shot(1, w, 4, st.px + dx * 0.4, st.py + dy * 0.4, st.pz + dz * 0.4,
-                dx * 8.25, dy * 8.25, dz * 8.25, dmg, 2200, pack_rgb(255, 60, 20));
+                dx * 8.25 * vel_mul, dy * 8.25 * vel_mul, dz * 8.25 * vel_mul, dmg, 2200, pack_rgb(255, 60, 20));
         } else {
             // Chaining Cannon Ball: 1/2 damage, 2x velocity, chains on kill.
             st.fire_cd_ms = (360.0 * rof_mul) as! i32;
-            queue_sfx(SFX_PLASMA);
+            queue_sfx(SFX_CANNON);
             let dmg = (50.0 * dmg_mul) as! i32;
             spawn_shot(1, w, 0, st.px + dx * 0.4, st.py + dy * 0.4, st.pz + dz * 0.4,
-                dx * 31.0, dy * 31.0, dz * 31.0, dmg, 1600, pack_rgb(255, 160, 48));
+                dx * 31.0 * vel_mul, dy * 31.0 * vel_mul, dz * 31.0 * vel_mul, dmg, 1600, pack_rgb(255, 160, 48));
         }
     } else if w == WEP_LASER {
         // Authentic: firing ANY laser mode fully recharges your shield (manual 9.4).
@@ -4629,7 +5103,7 @@ fn fire_weapon(secondary: i32) {
                 if is_block_solid(blk) != 0 {
                     end_x = hx; end_y = hy; end_z = hz;
                     if bx >= 0 && bx < 16 && by >= 0 && by < 16 && bz >= 0 && bz < 16 && is_block_destructible(blk) != 0 {
-                        break_block_at(bx, by, bz);
+                        damage_block_at(bx, by, bz, dmg);
                     } else {
                         spawn_burst(hx, hy, hz, col, 6);
                     }
@@ -4637,7 +5111,7 @@ fn fire_weapon(secondary: i32) {
                 }
                 var ei: i32 = 0;
                 while ei < MAX_ENTITIES {
-                    if st.entities[ei].active != 0 && st.entities[ei].kind >= ENT_RAT && st.entities[ei].kind <= ENT_SINGULARITY {
+                    if st.entities[ei].active != 0 && is_enemy_kind(st.entities[ei].kind) != 0 {
                         let ex = st.entities[ei].x - hx;
                         let ey = st.entities[ei].y - hy;
                         let ez = st.entities[ei].z - hz;
@@ -4659,7 +5133,7 @@ fn fire_weapon(secondary: i32) {
                 var launched: i32 = 0;
                 var ei2: i32 = 0;
                 while ei2 < MAX_ENTITIES && launched < 4 {
-                    if st.entities[ei2].active != 0 && st.entities[ei2].kind >= ENT_RAT && st.entities[ei2].kind <= ENT_SINGULARITY {
+                    if st.entities[ei2].active != 0 && is_enemy_kind(st.entities[ei2].kind) != 0 {
                         let ex2 = st.entities[ei2].x - st.px;
                         let ey2 = st.entities[ei2].y - st.py;
                         let ez2 = st.entities[ei2].z - st.pz;
@@ -4706,7 +5180,7 @@ fn fire_weapon(secondary: i32) {
                 if is_block_solid(blk) != 0 {
                     end_x = hx; end_y = hy; end_z = hz;
                     if bx >= 0 && bx < 16 && by >= 0 && by < 16 && bz >= 0 && bz < 16 && is_block_destructible(blk) != 0 {
-                        break_block_at(bx, by, bz);
+                        damage_block_at(bx, by, bz, dmg);
                     } else {
                         spawn_burst(hx, hy, hz, col, 6);
                     }
@@ -4714,7 +5188,7 @@ fn fire_weapon(secondary: i32) {
                 }
                 var ei: i32 = 0;
                 while ei < MAX_ENTITIES {
-                    if st.entities[ei].active != 0 && st.entities[ei].kind >= ENT_RAT && st.entities[ei].kind <= ENT_SINGULARITY {
+                    if st.entities[ei].active != 0 && is_enemy_kind(st.entities[ei].kind) != 0 {
                         let ex = st.entities[ei].x - hx;
                         let ey = st.entities[ei].y - hy;
                         let ez = st.entities[ei].z - hz;
@@ -4779,7 +5253,7 @@ fn fire_weapon(secondary: i32) {
                 var best_d: f64 = 12.0;
                 var ei: i32 = 0;
                 while ei < MAX_ENTITIES {
-                    if used_flags[ei] == 0 && st.entities[ei].active != 0 && st.entities[ei].kind >= ENT_RAT && st.entities[ei].kind <= ENT_SINGULARITY {
+                    if used_flags[ei] == 0 && st.entities[ei].active != 0 && is_enemy_kind(st.entities[ei].kind) != 0 {
                         let ex = st.entities[ei].x - st.px;
                         let ey = st.entities[ei].y - st.py;
                         let ez = st.entities[ei].z - st.pz;
@@ -4820,25 +5294,25 @@ fn fire_weapon(secondary: i32) {
         if mode == 1 {
             // Poison dart: no impact damage; poison = 20 primary shots over 10s (stacking duration).
             st.fire_cd_ms = (250.0 * rof_mul) as! i32;
-            queue_sfx(SFX_PLASMA);
+            queue_sfx(SFX_MINIGUN);
             let pdps = (32.0 * dmg_mul) as! i32;
             spawn_shot(1, w, 1, st.px + dx * 0.4, st.py + dy * 0.4, st.pz + dz * 0.4,
-                dx * 14.0, dy * 14.0, dz * 14.0, pdps, 1400, pack_rgb(134, 239, 172));
+                dx * 14.0 * vel_mul, dy * 14.0 * vel_mul, dz * 14.0 * vel_mul, pdps, 1400, pack_rgb(134, 239, 172));
         } else {
             st.fire_cd_ms = (78.0 * rof_mul) as! i32;
-            queue_sfx(SFX_PLASMA);
+            queue_sfx(SFX_MINIGUN);
             let dmg = (16.0 * dmg_mul) as! i32;
             let spread = 0.042;
             let jx = dx + (rng_f01() - 0.5) * spread;
             let jy = dy + (rng_f01() - 0.5) * spread;
             let jz = dz + (rng_f01() - 0.5) * spread;
             spawn_shot(1, w, 0, st.px + dx * 0.4, st.py + dy * 0.4, st.pz + dz * 0.4,
-                jx * 22.0, jy * 22.0, jz * 22.0, dmg, 1000, pack_rgb(255, 215, 72));
+                jx * 22.0 * vel_mul, jy * 22.0 * vel_mul, jz * 22.0 * vel_mul, dmg, 1000, pack_rgb(255, 215, 72));
         }
     } else if w == WEP_RAILGUN {
         // Piercing hitscan; Vampire modes steal 1/4 of damage dealt as health (manual 9.8).
         st.fire_cd_ms = ((if mode == 1 { 155.0 } else { 620.0 }) * rof_mul) as! i32;
-        queue_sfx(SFX_LASER);
+        queue_sfx(SFX_RAILGUN);
         let base = (90.0 * dmg_mul) as! i32;
         let dmg = if mode == 1 { base * 2 } else if mode == 2 { base / 2 } else { base };
         let vamp = if mode == 2 || mode == 3 { 1 } else { 0 };
@@ -4867,7 +5341,7 @@ fn fire_weapon(secondary: i32) {
             if is_block_solid(blk) != 0 {
                 end_x = hx; end_y = hy; end_z = hz;
                 if bx >= 0 && bx < 16 && by >= 0 && by < 16 && bz >= 0 && bz < 16 && is_block_destructible(blk) != 0 {
-                    break_block_at(bx, by, bz);
+                    damage_block_at(bx, by, bz, dmg);
                 } else {
                     spawn_burst(hx, hy, hz, col, 7);
                 }
@@ -4876,7 +5350,7 @@ fn fire_weapon(secondary: i32) {
             var ei: i32 = 0;
             while ei < MAX_ENTITIES {
                 if hit_flags[ei] == 0 && st.entities[ei].active != 0 &&
-                   st.entities[ei].kind >= ENT_RAT && st.entities[ei].kind <= ENT_SINGULARITY {
+                   is_enemy_kind(st.entities[ei].kind) != 0 {
                     let ex = st.entities[ei].x - hx;
                     let ey = st.entities[ei].y - hy;
                     let ez = st.entities[ei].z - hz;
@@ -4901,21 +5375,22 @@ fn fire_weapon(secondary: i32) {
     } else if w == WEP_EMP {
         st.fire_cd_ms = (1000.0 * rof_mul) as! i32;
         queue_sfx(SFX_EMP);
+        let emp_rad = 7.0 + (st.emp_rad_lvl as f64) * 1.2;
         if mode == 1 {
             // Secondary: stun + damage pulse, but 100 recoil damage to you (manual 9.9).
-            explosion_at(st.px, st.py, st.pz, 7.0, (28.0 * dmg_mul) as! i32, 4000, 0, pack_rgb(96, 165, 250), -1, 0);
+            explosion_at(st.px, st.py, st.pz, emp_rad, (28.0 * dmg_mul) as! i32, 4000, 0, pack_rgb(96, 165, 250), -1, 0);
             damage_player(100);
             set_status_msg("EMP Shockwave! (100 recoil damage taken)", 1400);
         } else {
             // Primary: pure stun pulse, no damage.
-            explosion_at(st.px, st.py, st.pz, 7.0, 0, 4000, 0, pack_rgb(96, 165, 250), -1, 0);
+            explosion_at(st.px, st.py, st.pz, emp_rad, 0, 4000, 0, pack_rgb(96, 165, 250), -1, 0);
             set_status_msg("EMP Pulse: enemies stunned!", 1200);
         }
     } else if w == WEP_NUKE {
         if mode == 2 {
             // Nuclear Pulse Propulsion: detonate a High Damage nuke at your position + propel.
             st.fire_cd_ms = (650.0 * rof_mul) as! i32;
-            queue_sfx(SFX_EXPLODE);
+            queue_sfx(SFX_NUKE);
             st.vx = st.vx + dx * 13.5;
             st.vy = st.vy + dy * 13.5;
             st.vz = st.vz + dz * 13.5;
@@ -4924,16 +5399,16 @@ fn fire_weapon(secondary: i32) {
         } else if mode == 1 {
             // High Velocity & Radius: 3x speed, 2x radius, 1/2 damage.
             st.fire_cd_ms = (750.0 * rof_mul) as! i32;
-            queue_sfx(SFX_EXPLODE);
+            queue_sfx(SFX_NUKE);
             st.vx = st.vx - dx * 7.5;
             st.vy = st.vy - dy * 7.5;
             st.vz = st.vz - dz * 7.5;
             spawn_shot(1, w, 1, st.px + dx * 0.5, st.py + dy * 0.5, st.pz + dz * 0.5,
-                dx * 28.5, dy * 28.5, dz * 28.5, (80.0 * dmg_mul) as! i32, 1600, pack_rgb(163, 230, 53));
+                dx * 28.5 * vel_mul, dy * 28.5 * vel_mul, dz * 28.5 * vel_mul, (80.0 * dmg_mul) as! i32, 1600, pack_rgb(163, 230, 53));
         } else {
             // High Damage nuke.
             st.fire_cd_ms = (950.0 * rof_mul) as! i32;
-            queue_sfx(SFX_EXPLODE);
+            queue_sfx(SFX_NUKE);
             st.vx = st.vx - dx * 7.5;
             st.vy = st.vy - dy * 7.5;
             st.vz = st.vz - dz * 7.5;
@@ -4985,6 +5460,22 @@ fn entity_label(k: i32) -> const u8[:] {
     if k == ENT_DEMON { return "Core Demon"; }
     if k == ENT_GUARDIAN { return "Pool Ball Guardian"; }
     if k == ENT_SINGULARITY { return "THE SINGULARITY BOSS"; }
+    if k == ENT_TWEEDLE { return "Tweedle"; }
+    if k == ENT_GNAT { return "Swarm Gnat"; }
+    if k == ENT_BABY_SPIDER { return "Baby Spider"; }
+    if k == ENT_LAMPREY { return "Cave Lamprey"; }
+    if k == ENT_BURLY { return "Burly Sentinel"; }
+    if k == ENT_BEHOLDER { return "Mystical Beholder"; }
+    if k == ENT_SLIVER { return "Cryo Sliver"; }
+    if k == ENT_VULCAN { return "Vulcan Core"; }
+    if k == ENT_GROWER { return "Mutating Grower"; }
+    if k == ENT_SHRINKER { return "Phase Shrinker"; }
+    if k == ENT_ROCKET_SPIDER { return "Rocket Spider"; }
+    if k == ENT_HYDRA { return "Regenerating Hydra"; }
+    if k == ENT_TON618_BOSS { return "TON 618 SUPERMASSIVE"; }
+    if k == ENT_HEX_SENTRY { return "Hex Sentry"; }
+    if k == ENT_ARCADE_DRONE { return "Arcade Drone"; }
+    if k == ENT_FLARE { return "Plasma Flare Beacon"; }
     if k == ENT_FRIEND_K { return "Friend 'K' [USE]"; }
     if k == ENT_RING_GREEN { return "Green Shrink Ring (16x) [USE]"; }
     if k == ENT_RING_RED { return "Red Grow Ring (16x) [USE]"; }
@@ -5011,8 +5502,8 @@ fn update_crosshair_target() {
         if st.entities[ei].active != 0 {
             let k = st.entities[ei].kind;
             if (k >= ENT_RING_GREEN && k <= ENT_RING_PINK) ||
-               (k >= ENT_RAT && k <= ENT_SINGULARITY) ||
-               k == ENT_FRIEND_K || k == ENT_RING_DANGER {
+               is_enemy_kind(k) != 0 ||
+               k == ENT_FRIEND_K || k == ENT_RING_DANGER || k == ENT_FLARE {
                 let vx = st.entities[ei].x - st.px;
                 let vy = st.entities[ei].y - st.py;
                 let vz = st.entities[ei].z - st.pz;
@@ -5021,7 +5512,7 @@ fn update_crosshair_target() {
                     let px = vx - fx * proj;
                     let py = vy - fy * proj;
                     let pz = vz - fz * proj;
-                    let rad2 = if k == ENT_SINGULARITY { 0.85 } else { 0.42 };
+                    let rad2 = if k == ENT_SINGULARITY || k == ENT_TON618_BOSS { 0.85 } else { 0.42 };
                     if (px * px + py * py + pz * pz) <= rad2 {
                         best_et = proj;
                         best_ei = ei;
@@ -5052,7 +5543,7 @@ fn update_crosshair_target() {
         let ek = st.entities[best_ei].kind;
         let lbl = entity_label(ek);
         if lbl.len > 0 {
-            if ek >= ENT_RAT && ek <= ENT_SINGULARITY {
+            if is_enemy_kind(ek) != 0 {
                 set_target_name(lbl, st.entities[best_ei].hp, st.entities[best_ei].max_hp);
             } else {
                 set_target_name(lbl, 0, 0);
@@ -5078,6 +5569,20 @@ fn tome_title(biome: i32) -> const u8[:] {
     if biome == BIOME_BLACK_CUBE { return "XAR LORE: MENGER LATTICE"; }
     if biome == BIOME_ICE_WORLD { return "XAR LORE: GLACIAL SPIRE"; }
     if biome == BIOME_DESERT_WORLD { return "XAR LORE: DESERT PYRAMID"; }
+    if biome == BIOME_NOOB_FLOWER { return "XAR LORE: NOOB FLOWER"; }
+    if biome == BIOME_YING_LIBRARY { return "XAR LORE: YING LIBRARY"; }
+    if biome == BIOME_BOTANY_LAB { return "XAR LORE: BOTANY LAB"; }
+    if biome == BIOME_BETA_CUBE { return "XAR LORE: BETA CUBE"; }
+    if biome == BIOME_RED_CAVES { return "XAR LORE: RED CAVES"; }
+    if biome == BIOME_I1_LIGHTHOUSE { return "XAR LORE: I1 LIGHTHOUSE"; }
+    if biome == BIOME_I2_MOUNTAINS { return "XAR LORE: I2 MOUNTAINS"; }
+    if biome == BIOME_BURLINGTON { return "XAR LORE: BURLINGTON CITADEL"; }
+    if biome == BIOME_I3_ROOTS { return "XAR LORE: I3 ROOT MATRIX"; }
+    if biome == BIOME_PURPLE_HOUSE { return "XAR LORE: PURPLE HOUSE"; }
+    if biome == BIOME_SINGLETON { return "XAR LORE: THE SINGLETON"; }
+    if biome == BIOME_ARCADE { return "XAR LORE: NEON ARCADE"; }
+    if biome == BIOME_TON618 { return "XAR LORE: TON 618 ABYSS"; }
+    if biome == BIOME_SOLAR_SYSTEM { return "XAR LORE: SOLAR CORONA"; }
     return "XAR LORE: THE INNER CORE";
 }
 
@@ -5112,6 +5617,18 @@ fn tome_body_line(biome: i32, row: i32) -> const u8[:] {
         if row == 2 { return "Collect Damage, RoF & Nuke modules before entering Core Gates."; }
         return "Deep Core Gates (LVL >= 6) unlock Nuke [9] & Dark Hole [0].";
     }
+    if biome >= BIOME_NOOB_FLOWER && biome <= BIOME_BURLINGTON {
+        if row == 0 { return "Deep outer/middle strata hold Library Books, Vats & Quicksand."; }
+        if row == 1 { return "Plasma Mode 6 (Flare) lights dark caves; Telekinesis pulls UPG!"; }
+        if row == 2 { return "Short Markers expire after 3h; use Long Markers for safehouses."; }
+        return "Watch out for Cryo Slivers (freeze-immune) & Beholders (phase)!";
+    }
+    if biome >= BIOME_I3_ROOTS && biome <= BIOME_SOLAR_SYSTEM {
+        if row == 0 { return "Extreme strata: TON 618, Arcade Cabinets, Solar Plasma & Roots."; }
+        if row == 1 { return "Play Neon Arcade cabinets [USE] for Gold & Leaderboard trophies."; }
+        if row == 2 { return "Beyond Max upgrades scale active weapons & Push past LVL 12."; }
+        return "Defeat TON 618 or The Singularity to claim Jade Armor & Quasar!";
+    }
     if row == 0 { return "The Inner Core houses The Singularity and imprisoned Friend 'K'."; }
     if row == 1 { return "Defeat The Singularity to unlock Quasar Drive for Weapon [0]."; }
     if row == 2 { return "Use Dark Hole Blood Pact (-75 HP -> +2 Ammo) in emergencies."; }
@@ -5142,6 +5659,33 @@ fn has_clear_los(x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64) -> i32 {
     return 1;
 }
 
+fn has_clear_los_to_block(x0: f64, y0: f64, z0: f64, tbx: i32, tby: i32, tbz: i32) -> i32 {
+    let x1 = (tbx as f64) + 0.5;
+    let y1 = (tby as f64) + 0.5;
+    let z1 = (tbz as f64) + 0.5;
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let dz = z1 - z0;
+    let d = fsqrt(dx * dx + dy * dy + dz * dz);
+    if d <= 0.35 { return 1; }
+    let inv_d = 1.0 / d;
+    let rx = dx * inv_d;
+    let ry = dy * inv_d;
+    let rz = dz * inv_d;
+    var t: f64 = 0.25;
+    let limit = d - 0.15;
+    while t < limit {
+        let bx = ffloor(x0 + rx * t);
+        let by = ffloor(y0 + ry * t);
+        let bz = ffloor(z0 + rz * t);
+        if !(bx == tbx && by == tby && bz == tbz) && world_block_rel(bx, by, bz) != BLK_AIR {
+            return 0;
+        }
+        t = t + 0.20;
+    }
+    return 1;
+}
+
 fn trigger_telekinesis() {
     if st.screen != SCREEN_PLAY || st.hp <= 0 || st.telekinesis_ms > 0 {
         return;
@@ -5158,7 +5702,7 @@ fn trigger_telekinesis() {
             let dy = st.py - ey;
             let dz = st.pz - ez;
             let d = fsqrt(dx * dx + dy * dy + dz * dz);
-            if d > 0.25 && d <= 10.5 {
+            if d > 0.25 && d <= 11.5 {
                 if has_clear_los(st.px, st.py, st.pz, ex, ey, ez) != 0 {
                     let tx = st.px - (dx / d) * 0.45;
                     let ty = st.py - (dy / d) * 0.45;
@@ -5179,6 +5723,36 @@ fn trigger_telekinesis() {
             }
         }
         i = i + 1;
+    }
+    // Telekinesis also harvests visible Upgrade blocks & Mystery [?] blocks in range!
+    let pbx = clamp_i(ffloor(st.px), 0, 15);
+    let pby = clamp_i(ffloor(st.py), 0, 15);
+    let pbz = clamp_i(ffloor(st.pz), 0, 15);
+    var bz: i32 = clamp_i(pbz - 5, 0, 15);
+    let max_z = clamp_i(pbz + 5, 0, 15);
+    while bz <= max_z {
+        var by: i32 = clamp_i(pby - 5, 0, 15);
+        let max_y = clamp_i(pby + 5, 0, 15);
+        while by <= max_y {
+            var bx: i32 = clamp_i(pbx - 5, 0, 15);
+            let max_x = clamp_i(pbx + 5, 0, 15);
+            while bx <= max_x {
+                let tb = get_block(bx, by, bz);
+                if is_block_upgrade(tb) != 0 || tb == BLK_MYSTERY_Q {
+                    if has_clear_los_to_block(st.px, st.py, st.pz, bx, by, bz) != 0 {
+                        if tb == BLK_MYSTERY_Q {
+                            break_block_at(bx, by, bz);
+                        } else {
+                            collect_upgrade_block(bx, by, bz, tb);
+                        }
+                        pulled = pulled + 1;
+                    }
+                }
+                bx = bx + 1;
+            }
+            by = by + 1;
+        }
+        bz = bz + 1;
     }
     st.telekinesis_ms = if pulled > 0 { 800 } else { 420 };
     if pulled > 0 {
@@ -5204,7 +5778,7 @@ fn push_marker_frame(f: ScaleFrame) {
 fn drop_marker(is_long: i32) {
     var slot: i32 = 0;
     if is_long == 0 {
-        if st.depth > 0 && st.genesis_mode == 0 {
+        if st.depth > 0 && st.genesis_mode == 0 && st.mut_inf_markers == 0 {
             if st.gold < 10 {
                 set_status_msg("Need 10 Gold to drop Short Marker past LVL 0!", 1500);
                 return;
@@ -5213,11 +5787,13 @@ fn drop_marker(is_long: i32) {
         }
         slot = 0;
     } else {
-        if st.gold < 20 {
-            set_status_msg("Need 20 Gold to drop a Long Marker!", 1500);
-            return;
+        if st.mut_inf_markers == 0 {
+            if st.gold < 20 {
+                set_status_msg("Need 20 Gold to drop a Long Marker!", 1500);
+                return;
+            }
+            st.gold = st.gold - 20;
         }
-        st.gold = st.gold - 20;
         slot = 1;
         while slot < MAX_MARKERS && st.markers[slot].used != 0 {
             slot = slot + 1;
@@ -5250,6 +5826,7 @@ fn drop_marker(is_long: i32) {
     st.markers[slot].pos_cnt = pos_cnt;
     st.markers[slot].neg_off = neg_off;
     st.markers[slot].neg_cnt = neg_cnt;
+    st.markers[slot].created_ms = st.play_ms;
     st.active_marker = slot;
     st.autosave_dirty = 1;
     queue_sfx(SFX_PICKUP);
@@ -5388,10 +5965,20 @@ fn use_nearest() {
         if b == BLK_SELL_STATION { st.screen = SCREEN_SELL; queue_sfx(SFX_CLICK); return; }
         if b == BLK_BLACK_MARKET { st.screen = SCREEN_BLACK_MARKET; queue_sfx(SFX_CLICK); return; }
         if b == BLK_UPGRADE_STATION { st.screen = SCREEN_UPGRADE; queue_sfx(SFX_CLICK); return; }
+        if b == BLK_ARCADE_CAB {
+            st.arcade_active = 1;
+            st.arcade_score = 0;
+            st.arcade_hits = 0;
+            st.arcade_timer_ms = 20000;
+            st.arcade_target = (rng_u32() % 12) as! i32;
+            queue_sfx(SFX_CLICK);
+            st.screen = SCREEN_ARCADE;
+            return;
+        }
         if b == BLK_TOME || b == BLK_TEXT_BLOCK {
             let cb = cur_biome();
             st.tome_id = cb;
-            let bit: i32 = (1 as! i32) << clamp_i(cb, 0, 15);
+            let bit: i32 = (1 as! i32) << clamp_i(cb, 0, 23);
             if (st.tome_read_mask & bit) == 0 {
                 st.tome_read_mask = st.tome_read_mask | bit;
                 st.score_xp = st.score_xp + 40;
@@ -5451,10 +6038,20 @@ fn use_nearest() {
                 if nb == BLK_SELL_STATION { st.screen = SCREEN_SELL; queue_sfx(SFX_CLICK); return; }
                 if nb == BLK_BLACK_MARKET { st.screen = SCREEN_BLACK_MARKET; queue_sfx(SFX_CLICK); return; }
                 if nb == BLK_UPGRADE_STATION { st.screen = SCREEN_UPGRADE; queue_sfx(SFX_CLICK); return; }
+                if nb == BLK_ARCADE_CAB {
+                    st.arcade_active = 1;
+                    st.arcade_score = 0;
+                    st.arcade_hits = 0;
+                    st.arcade_timer_ms = 20000;
+                    st.arcade_target = (rng_u32() % 12) as! i32;
+                    queue_sfx(SFX_CLICK);
+                    st.screen = SCREEN_ARCADE;
+                    return;
+                }
                 if nb == BLK_TOME || nb == BLK_TEXT_BLOCK {
                     let cb = cur_biome();
                     st.tome_id = cb;
-                    let bit: i32 = (1 as! i32) << clamp_i(cb, 0, 15);
+                    let bit: i32 = (1 as! i32) << clamp_i(cb, 0, 23);
                     if (st.tome_read_mask & bit) == 0 {
                         st.tome_read_mask = st.tome_read_mask | bit;
                         st.score_xp = st.score_xp + 40;
@@ -5614,52 +6211,65 @@ fn handle_black_market_action(choice: i32) {
 fn handle_upgrade_action(choice: i32) {
     if choice == 1 && st.gold >= 100 {
         st.gold = st.gold - 100;
-        st.dmg_lvl = st.dmg_lvl + 1;
+        st.wep_dmg_lvl[WEP_PLASMA] = st.wep_dmg_lvl[WEP_PLASMA] + 1;
+        st.plasma_regen_lvl = st.plasma_regen_lvl + 1;
         st.wep_unlocked[WEP_PLASMA] = 1;
         queue_sfx(SFX_PICKUP);
-        set_status_msg("Plasma damage upgraded!", 1400);
+        set_status_msg("Plasma damage & recharge upgraded!", 1400);
     } else if choice == 2 && st.gold >= 100 {
         st.gold = st.gold - 100;
-        st.dmg_lvl = st.dmg_lvl + 1;
+        st.wep_dmg_lvl[WEP_CANNON] = st.wep_dmg_lvl[WEP_CANNON] + 1;
+        st.wep_vel_lvl[WEP_CANNON] = st.wep_vel_lvl[WEP_CANNON] + 1;
         st.wep_unlocked[WEP_CANNON] = 1;
         queue_sfx(SFX_PICKUP);
-        set_status_msg("Cannon damage upgraded!", 1400);
+        set_status_msg("Cannon damage & velocity upgraded!", 1400);
     } else if choice == 3 && st.gold >= 100 {
         st.gold = st.gold - 100;
-        st.dmg_lvl = st.dmg_lvl + 1;
+        st.wep_dmg_lvl[WEP_LASER] = st.wep_dmg_lvl[WEP_LASER] + 1;
+        st.shield_cap_lvl = st.shield_cap_lvl + 1;
+        refresh_derived();
+        st.shields = st.max_shields;
         st.wep_unlocked[WEP_LASER] = 1;
         queue_sfx(SFX_PICKUP);
-        set_status_msg("Laser damage upgraded!", 1400);
+        set_status_msg("Laser damage & +10 Shield Cap upgraded!", 1400);
     } else if choice == 4 && st.gold >= 100 {
         st.gold = st.gold - 100;
-        st.dmg_lvl = st.dmg_lvl + 1;
+        st.wep_dmg_lvl[WEP_ROCKET] = st.wep_dmg_lvl[WEP_ROCKET] + 1;
+        st.wep_cap_lvl[WEP_ROCKET] = st.wep_cap_lvl[WEP_ROCKET] + 1;
+        set_default_ammo_caps();
         st.wep_unlocked[WEP_ROCKET] = 1;
         queue_sfx(SFX_PICKUP);
-        set_status_msg("Rocket damage upgraded!", 1400);
+        set_status_msg("Rocket damage & capacity upgraded!", 1400);
     } else if choice == 5 && st.gold >= 200 {
         st.gold = st.gold - 200;
-        st.dmg_lvl = st.dmg_lvl + 1;
+        st.wep_dmg_lvl[WEP_RAILGUN] = st.wep_dmg_lvl[WEP_RAILGUN] + 1;
+        st.wep_rof_lvl[WEP_RAILGUN] = st.wep_rof_lvl[WEP_RAILGUN] + 1;
         st.wep_unlocked[WEP_RAILGUN] = 1;
         queue_sfx(SFX_PICKUP);
-        set_status_msg("Railgun damage upgraded!", 1400);
+        set_status_msg("Railgun damage & RoF upgraded!", 1400);
     } else if choice == 6 && st.gold >= 100 {
         st.gold = st.gold - 100;
-        st.dmg_lvl = st.dmg_lvl + 1;
+        st.wep_dmg_lvl[WEP_EMP] = st.wep_dmg_lvl[WEP_EMP] + 1;
+        st.emp_rad_lvl = st.emp_rad_lvl + 1;
         st.wep_unlocked[WEP_EMP] = 1;
         queue_sfx(SFX_PICKUP);
-        set_status_msg("EMP damage upgraded!", 1400);
+        set_status_msg("EMP damage & shockwave radius upgraded!", 1400);
     } else if choice == 7 && st.gold >= 200 {
         st.gold = st.gold - 200;
-        st.dmg_lvl = st.dmg_lvl + 1;
+        st.wep_dmg_lvl[WEP_NUKE] = st.wep_dmg_lvl[WEP_NUKE] + 1;
+        st.wep_cap_lvl[WEP_NUKE] = st.wep_cap_lvl[WEP_NUKE] + 1;
+        set_default_ammo_caps();
         st.wep_unlocked[WEP_NUKE] = 1;
         queue_sfx(SFX_PICKUP);
-        set_status_msg("Nuke damage upgraded!", 1400);
+        set_status_msg("Nuke damage & max capacity upgraded!", 1400);
     } else if choice == 8 && st.gold >= 300 {
         st.gold = st.gold - 300;
-        st.dmg_lvl = st.dmg_lvl + 1;
+        st.wep_dmg_lvl[WEP_DARKHOLE] = st.wep_dmg_lvl[WEP_DARKHOLE] + 1;
+        st.wep_cap_lvl[WEP_DARKHOLE] = st.wep_cap_lvl[WEP_DARKHOLE] + 1;
+        set_default_ammo_caps();
         st.wep_unlocked[WEP_DARKHOLE] = 1;
         queue_sfx(SFX_PICKUP);
-        set_status_msg("Dark Hole damage upgraded!", 1400);
+        set_status_msg("Dark Hole damage & capacity upgraded!", 1400);
     } else if choice == 9 && st.gold >= 200 {
         st.gold = st.gold - 200;
         st.max_hp = st.max_hp + 20;
@@ -5680,6 +6290,26 @@ fn handle_upgrade_action(choice: i32) {
     st.autosave_dirty = 1;
 }
 
+fn handle_arcade_tap(cell: i32) {
+    if st.arcade_active == 0 { return; }
+    if cell == st.arcade_target {
+        st.arcade_hits = st.arcade_hits + 1;
+        st.arcade_score = st.arcade_score + 100;
+        add_gold(15);
+        award_xp(25);
+        if st.arcade_score > st.arcade_best {
+            st.arcade_best = st.arcade_score;
+        }
+        if st.arcade_score >= 600 {
+            award_trophy_id(6, "TROPHY: ARCADE MASTER! (+600 Score)");
+        }
+        st.arcade_target = ((st.arcade_target + 1 + ((rng_u32() % 11) as! i32)) % 12);
+        queue_sfx(SFX_PICKUP);
+    } else {
+        queue_sfx(SFX_CLICK);
+    }
+}
+
 fn step_simulation(dt_ms: i32) {
     if st.screen != SCREEN_PLAY { return; }
     st.anim_ms = st.anim_ms + (dt_ms as i64);
@@ -5695,6 +6325,13 @@ fn step_simulation(dt_ms: i32) {
     if st.turning_ms > 0 { st.turning_ms = st.turning_ms - dt_ms; if st.turning_ms < 0 { st.turning_ms = 0; } }
     if st.black_hole_drive_ms > 0 { st.black_hole_drive_ms = st.black_hole_drive_ms - dt_ms; if st.black_hole_drive_ms < 0 { st.black_hole_drive_ms = 0; } }
     if st.quasar_drive_ms > 0 { st.quasar_drive_ms = st.quasar_drive_ms - dt_ms; if st.quasar_drive_ms < 0 { st.quasar_drive_ms = 0; } }
+    if st.hazard_cd_ms > 0 { st.hazard_cd_ms = st.hazard_cd_ms - dt_ms; if st.hazard_cd_ms < 0 { st.hazard_cd_ms = 0; } }
+    // Short Marker 3-hour (10,800,000 ms) expiration rule
+    if st.markers[0].used != 0 && st.mut_inf_markers == 0 && (st.play_ms - st.markers[0].created_ms) >= SHORT_MARKER_TTL_MS {
+        st.markers[0].used = 0;
+        if st.active_marker == 0 { st.active_marker = -1; }
+        set_status_msg("Short Marker expired after 3h!", 1800);
+    }
 
     // 1-second rolling DPS meter
     st.dps_timer_ms = st.dps_timer_ms + dt_ms;
@@ -5758,14 +6395,31 @@ fn step_simulation(dt_ms: i32) {
     }
     if st.ammo[WEP_PLASMA] < st.max_ammo[WEP_PLASMA] {
         st.plasma_regen_ms = st.plasma_regen_ms + dt_ms;
-        while st.plasma_regen_ms >= 2000 {
-            st.plasma_regen_ms = st.plasma_regen_ms - 2000;
+        let p_period = clamp_i(2000 - st.plasma_regen_lvl * 220, 450, 2000);
+        while st.plasma_regen_ms >= p_period {
+            st.plasma_regen_ms = st.plasma_regen_ms - p_period;
             if st.ammo[WEP_PLASMA] < st.max_ammo[WEP_PLASMA] {
                 st.ammo[WEP_PLASMA] = st.ammo[WEP_PLASMA] + 1;
             }
         }
     } else {
         st.plasma_regen_ms = 0;
+    }
+
+    // Environmental Hazard check (Quicksand, Solar Corona Plasma, Event Horizon)
+    let hblk = world_block_rel(ffloor(st.px), ffloor(st.py - 0.35), ffloor(st.pz));
+    if hblk == BLK_QUICKSAND {
+        st.vx = st.vx * 0.55;
+        st.vz = st.vz * 0.55;
+        if st.hazard_cd_ms <= 0 {
+            damage_player(4);
+            st.hazard_cd_ms = 750;
+        }
+    } else if hblk == BLK_SOLAR_PLASMA || hblk == BLK_EVENT_HORIZON {
+        if st.hazard_cd_ms <= 0 {
+            damage_player(if hblk == BLK_EVENT_HORIZON { 14 } else { 9 });
+            st.hazard_cd_ms = 650;
+        }
     }
 
     // 6-DOF Velocity integration & air drag (Rocket Mode vs Standard)
@@ -5786,14 +6440,15 @@ fn step_simulation(dt_ms: i32) {
             st.spawner_timer_ms = 3200;
             var mon_cnt: i32 = 0;
             var mi: i32 = 0;
+            let mon_cap = if st.mut_double_monsters != 0 { 18 } else { 10 };
             while mi < MAX_ENTITIES {
                 if st.entities[mi].active != 0 &&
-                   st.entities[mi].kind >= ENT_RAT && st.entities[mi].kind <= ENT_SINGULARITY {
+                   is_enemy_kind(st.entities[mi].kind) != 0 {
                     mon_cnt = mon_cnt + 1;
                 }
                 mi = mi + 1;
             }
-            if mon_cnt < 10 {
+            if mon_cnt < mon_cap {
                 var spawned: i32 = 0;
                 var sy: i32 = 1;
                 while sy < 15 && spawned == 0 {
@@ -5804,9 +6459,12 @@ fn step_simulation(dt_ms: i32) {
                             if get_block(sx, sy, sz) == BLK_SPAWNER {
                                 if get_block(sx, sy + 1, sz) == BLK_AIR {
                                     let cb = cur_biome();
-                                    let sk = if cb == BIOME_INNER_CORE { ENT_DEMON }
+                                    let sk = if cb == BIOME_INNER_CORE || cb == BIOME_TON618 { ENT_DEMON }
                                              else if cb == BIOME_BLACK_CUBE { ENT_MENACE }
                                              else if cb == BIOME_YING_FOREST { ENT_GOON }
+                                             else if cb == BIOME_RED_CAVES { ENT_LAMPREY }
+                                             else if cb == BIOME_ARCADE { ENT_ARCADE_DRONE }
+                                             else if cb == BIOME_BOTANY_LAB { ENT_GROWER }
                                              else { ENT_SPIDER };
                                     let shp = 34 + (if st.depth > 0 { st.depth * 18 } else { 0 });
                                     let _ = spawn_entity(sk, (sx as f64) + 0.5, (sy as f64) + 1.5, (sz as f64) + 0.5, shp, -1, 0);
@@ -5992,50 +6650,74 @@ fn step_simulation(dt_ms: i32) {
                     }
                 }
             }
-        } else if k >= ENT_RAT && k <= ENT_SINGULARITY {
+        } else if k == ENT_FLARE {
+            st.entities[i].cooldown = st.entities[i].cooldown - dt_ms;
+            if st.entities[i].cooldown <= 0 {
+                st.entities[i].active = 0;
+            }
+        } else if is_enemy_kind(k) != 0 {
             if st.entities[i].freeze_ms > 0 {
                 i = i + 1;
                 continue;
             }
-            if dist > 0.2 && dist < 13.0 {
+            // Special entity abilities: Hydra regen, Grower scale up, Shrinker scale down
+            if k == ENT_HYDRA && st.entities[i].hp < st.entities[i].max_hp {
+                st.entities[i].hp = clamp_i(st.entities[i].hp + (dt_ms / 180 + 1), 1, st.entities[i].max_hp);
+            } else if k == ENT_GROWER && st.entities[i].max_hp < 420 && ((st.anim_ms % 500) < (dt_ms as i64)) {
+                st.entities[i].max_hp = st.entities[i].max_hp + 2;
+                st.entities[i].hp = st.entities[i].hp + 2;
+            } else if k == ENT_SHRINKER && st.entities[i].hp > 18 && ((st.anim_ms % 600) < (dt_ms as i64)) {
+                st.entities[i].hp = st.entities[i].hp - 1;
+            }
+            if dist > 0.2 && dist < 14.0 {
                 let spd =
-                    if k == ENT_RAT { 2.8 }
-                    else if k == ENT_SPIDER { 2.4 }
-                    else if k == ENT_GOON { 1.8 }
-                    else if k == ENT_MARINE { 1.5 }
-                    else if k == ENT_PIRATE { 2.1 }
-                    else if k == ENT_YINYANG { 1.6 }
-                    else if k == ENT_MENACE { 0.8 }
-                    else if k == ENT_DEMON { 1.9 }
-                    else if k == ENT_GUARDIAN { 1.2 }
-                    else { 1.45 };
+                    if k == ENT_RAT || k == ENT_GNAT || k == ENT_BABY_SPIDER { 2.9 }
+                    else if k == ENT_SPIDER || k == ENT_SHRINKER { 2.4 }
+                    else if k == ENT_GOON || k == ENT_TWEEDLE { 1.8 }
+                    else if k == ENT_MARINE || k == ENT_LAMPREY { 1.6 }
+                    else if k == ENT_PIRATE || k == ENT_ARCADE_DRONE { 2.15 }
+                    else if k == ENT_YINYANG || k == ENT_BEHOLDER { 1.65 }
+                    else if k == ENT_MENACE || k == ENT_HEX_SENTRY { 0.85 }
+                    else if k == ENT_DEMON || k == ENT_SLIVER || k == ENT_ROCKET_SPIDER { 1.95 }
+                    else if k == ENT_BURLY || k == ENT_GROWER { 1.15 }
+                    else if k == ENT_GUARDIAN || k == ENT_VULCAN || k == ENT_HYDRA { 1.25 }
+                    else { 1.55 };
                 if dist > 1.35 {
                     let nx = st.entities[i].x + (dx / dist) * spd * dt;
                     let ny = st.entities[i].y + (dy / dist) * spd * 0.75 * dt;
                     let nz = st.entities[i].z + (dz / dist) * spd * dt;
-                    if is_block_solid(get_block(ffloor(nx), ffloor(st.entities[i].y), ffloor(st.entities[i].z))) == 0 {
-                        st.entities[i].x = nx;
+                    let mystical = is_enemy_mystical(k);
+                    if mystical != 0 || is_block_solid(get_block(ffloor(nx), ffloor(st.entities[i].y), ffloor(st.entities[i].z))) == 0 {
+                        st.entities[i].x = fclamp(nx, 0.5, 15.5);
                     }
-                    if is_block_solid(get_block(ffloor(st.entities[i].x), ffloor(ny), ffloor(st.entities[i].z))) == 0 {
-                        st.entities[i].y = ny;
+                    if mystical != 0 || is_block_solid(get_block(ffloor(st.entities[i].x), ffloor(ny), ffloor(st.entities[i].z))) == 0 {
+                        st.entities[i].y = fclamp(ny, 0.5, 15.5);
                     }
-                    if is_block_solid(get_block(ffloor(st.entities[i].x), ffloor(st.entities[i].y), ffloor(nz))) == 0 {
-                        st.entities[i].z = nz;
+                    if mystical != 0 || is_block_solid(get_block(ffloor(st.entities[i].x), ffloor(st.entities[i].y), ffloor(nz))) == 0 {
+                        st.entities[i].z = fclamp(nz, 0.5, 15.5);
                     }
                 }
-
                 st.entities[i].cooldown = st.entities[i].cooldown - dt_ms;
                 if st.entities[i].cooldown <= 0 {
                     if dist < 1.4 {
                         damage_player(6 + (if st.depth > 0 { st.depth * 2 } else { 0 }));
                         st.entities[i].cooldown = 850;
-                    } else if dist < 11.5 && k != ENT_RAT {
-                        let sspd = if k == ENT_SINGULARITY { 9.5 } else { 7.5 };
-                        let edmg = 6 + (if st.depth > 0 { st.depth * 2 } else { 0 }) + (if k == ENT_SINGULARITY { 10 } else { 0 });
-                        let ergb = if k == ENT_SINGULARITY { pack_rgb(255, 64, 210) } else { pack_rgb(255, 92, 64) };
+                    } else if dist < 12.5 && k != ENT_RAT && k != ENT_BABY_SPIDER {
+                        let is_boss = (k == ENT_SINGULARITY || k == ENT_TON618_BOSS);
+                        let low_hp = is_boss && st.entities[i].hp * 2 < st.entities[i].max_hp;
+                        let sspd = if k == ENT_TON618_BOSS { 10.5 } else if k == ENT_SINGULARITY { 9.5 } else if k == ENT_ROCKET_SPIDER { 8.5 } else { 7.5 };
+                        let edmg = 6 + (if st.depth > 0 { st.depth * 2 } else { 0 }) + (if is_boss { 12 } else if k == ENT_ROCKET_SPIDER || k == ENT_VULCAN { 6 } else { 0 });
+                        let ergb = if k == ENT_TON618_BOSS { pack_rgb(255, 140, 40) } else if k == ENT_SINGULARITY { pack_rgb(255, 64, 210) } else { pack_rgb(255, 92, 64) };
                         spawn_shot(0, 0, 0, st.entities[i].x, st.entities[i].y, st.entities[i].z,
                             (dx / dist) * sspd, (dy / dist) * sspd, (dz / dist) * sspd, edmg, 1750, ergb);
-                        st.entities[i].cooldown = if k == ENT_SINGULARITY { 650 } else if k == ENT_MENACE { 1100 } else { 1550 };
+                        if low_hp {
+                            // Phase-2 multi-shot radial spread on bosses
+                            spawn_shot(0, 0, 0, st.entities[i].x, st.entities[i].y, st.entities[i].z,
+                                (-dz / dist) * sspd * 0.85, (dy / dist) * sspd * 0.85, (dx / dist) * sspd * 0.85, edmg, 1500, ergb);
+                            spawn_shot(0, 0, 0, st.entities[i].x, st.entities[i].y, st.entities[i].z,
+                                (dz / dist) * sspd * 0.85, (dy / dist) * sspd * 0.85, (-dx / dist) * sspd * 0.85, edmg, 1500, ergb);
+                        }
+                        st.entities[i].cooldown = if is_boss { if low_hp { 480 } else { 650 } } else if k == ENT_MENACE || k == ENT_HEX_SENTRY { 1050 } else { 1500 };
                     }
                 }
             }
@@ -6057,7 +6739,7 @@ fn step_simulation(dt_ms: i32) {
             var best_ed: f64 = 12.0;
             var ei: i32 = 0;
             while ei < MAX_ENTITIES {
-                if st.entities[ei].active != 0 && st.entities[ei].kind >= ENT_RAT && st.entities[ei].kind <= ENT_SINGULARITY {
+                if st.entities[ei].active != 0 && is_enemy_kind(st.entities[ei].kind) != 0 {
                     let hx = st.entities[ei].x - st.shots[i].x;
                     let hy = st.entities[ei].y - st.shots[i].y;
                     let hz = st.entities[ei].z - st.shots[i].z;
@@ -6078,8 +6760,13 @@ fn step_simulation(dt_ms: i32) {
 
         if st.shots[i].ttl_ms <= 0 {
             if st.shots[i].from_player != 0 {
-                let _ = shot_explode(st.shots[i].x, st.shots[i].y, st.shots[i].z,
-                    st.shots[i].wep, st.shots[i].secondary, st.shots[i].dmg, st.shots[i].rgb, -1);
+                if st.shots[i].wep == WEP_PLASMA && st.shots[i].secondary == 5 {
+                    let fi = spawn_entity(ENT_FLARE, st.shots[i].x, st.shots[i].y, st.shots[i].z, 1, -1, 0);
+                    if fi >= 0 { st.entities[fi].cooldown = 25000; }
+                } else {
+                    let _ = shot_explode(st.shots[i].x, st.shots[i].y, st.shots[i].z,
+                        st.shots[i].wep, st.shots[i].secondary, st.shots[i].dmg, st.shots[i].rgb, -1);
+                }
             }
             st.shots[i].active = 0;
             i = i + 1;
@@ -6102,11 +6789,17 @@ fn step_simulation(dt_ms: i32) {
             if st.shots[i].from_player != 0 {
                 let sw = st.shots[i].wep;
                 let smode = st.shots[i].secondary;
-                let exploded = shot_explode(nx, ny, nz, sw, smode, st.shots[i].dmg, st.shots[i].rgb, -1);
-                if exploded == 0 {
-                    spawn_burst(nx, ny, nz, st.shots[i].rgb, 5);
-                    if bx >= 0 && bx < 16 && by >= 0 && by < 16 && bz >= 0 && bz < 16 && is_block_destructible(blk) != 0 {
-                        break_block_at(bx, by, bz);
+                if sw == WEP_PLASMA && smode == 5 {
+                    let fi = spawn_entity(ENT_FLARE, st.shots[i].x, st.shots[i].y, st.shots[i].z, 1, -1, 0);
+                    if fi >= 0 { st.entities[fi].cooldown = 30000; }
+                    spawn_burst(st.shots[i].x, st.shots[i].y, st.shots[i].z, pack_rgb(255, 236, 150), 8);
+                } else {
+                    let exploded = shot_explode(nx, ny, nz, sw, smode, st.shots[i].dmg, st.shots[i].rgb, -1);
+                    if exploded == 0 {
+                        spawn_burst(nx, ny, nz, st.shots[i].rgb, 5);
+                        if bx >= 0 && bx < 16 && by >= 0 && by < 16 && bz >= 0 && bz < 16 && is_block_destructible(blk) != 0 {
+                            damage_block_at(bx, by, bz, st.shots[i].dmg);
+                        }
                     }
                 }
             }
@@ -6139,7 +6832,7 @@ fn step_simulation(dt_ms: i32) {
 
             var ei: i32 = 0;
             while ei < MAX_ENTITIES {
-                if st.entities[ei].active != 0 && st.entities[ei].kind >= ENT_RAT && st.entities[ei].kind <= ENT_SINGULARITY {
+                if st.entities[ei].active != 0 && is_enemy_kind(st.entities[ei].kind) != 0 {
                     let ex = st.entities[ei].x - nx;
                     let ey = st.entities[ei].y - ny;
                     let ez = st.entities[ei].z - nz;
@@ -6161,7 +6854,7 @@ fn step_simulation(dt_ms: i32) {
                                 var best_d: f64 = 28.0;
                                 var cj: i32 = 0;
                                 while cj < MAX_ENTITIES {
-                                    if cj != ei && st.entities[cj].active != 0 && st.entities[cj].kind >= ENT_RAT && st.entities[cj].kind <= ENT_SINGULARITY {
+                                    if cj != ei && st.entities[cj].active != 0 && is_enemy_kind(st.entities[cj].kind) != 0 {
                                         let cx = st.entities[cj].x - st.entities[ei].x;
                                         let cy = st.entities[cj].y - st.entities[ei].y;
                                         let cz = st.entities[cj].z - st.entities[ei].z;

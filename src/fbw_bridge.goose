@@ -37,6 +37,8 @@ extern fn fbw_gl_push_inward_quad(slot: i32, qidx: i32, packed4: i32);
 extern fn fbw_gl_set_l1_inward_meta(slot: i32, valid: i32, bx: i32, by: i32, bz: i32, biome: i32);
 extern fn fbw_gl_push_l1_inward_quad(slot: i32, qidx: i32, packed4: i32);
 extern fn fbw_gl_set_lod_config(disable_lod: i32, lod_dist_level: i32);
+extern fn fbw_gl_set_render_opts(chunk_grid: i32, dark_caves: i32);
+extern fn fbw_gl_push_light(x_mm: i32, y_mm: i32, z_mm: i32, rgb: i32, rad_mm: i32);
 extern fn fbw_gl_mark_inward_dirty();
 
 extern fn fbw_gl_clear_dynamic();
