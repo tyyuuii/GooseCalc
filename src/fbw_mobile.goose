@@ -967,9 +967,9 @@ fn sync_chunks_to_gl() {
 fn push_neighbor_slot(nb: i32) {
     let st = core();
     let filled = st.neighbor_fill[nb];
-    let valid = if filled != 0 { st.neighbor_valid[nb] } else { 0 };
+    let valid = st.neighbor_valid[nb];
     fbw_gl_set_neighbor_meta(nb, valid, st.neighbor_dx[nb], st.neighbor_dy[nb], st.neighbor_dz[nb], st.neighbor_biome[nb]);
-    if valid != 0 {
+    if valid != 0 && filled != 0 {
         let n_off = nb * CHUNK_VOL;
         var q: i32 = 0;
         while q < 1024 {
@@ -1732,7 +1732,8 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
         step_mobile_controls(dt_ms);
         step_simulation(dt_ms);
         drain_pending_sfx();
-        let _ = resolve_pending_neighbors(8);  // stream far-ring chunks (8/frame)
+        let streamed_nb = resolve_pending_neighbors(20);  // stream far-ring chunks (20/frame, ring+view-prioritized)
+        if streamed_nb > 0 { g_mob.inw_force = 1; }
         g_mob.autosave_ms = g_mob.autosave_ms + dt_ms;
         if (st.autosave_dirty != 0 && g_mob.autosave_ms >= 3500) || g_mob.autosave_ms >= 15000 {
             let _ = fbw_save_game();

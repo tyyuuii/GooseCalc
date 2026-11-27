@@ -2741,28 +2741,43 @@ fn resolve_neighbor_chunk(slot: i32, dx: i32, dy: i32, dz: i32) {
     var tbx: i32 = 0;
     var tby: i32 = 0;
     var tbz: i32 = 0;
+    var cx: i32 = dx;
+    var cy: i32 = dy;
+    var cz: i32 = dz;
+    var pbx: i32[64] = [0; 64];
+    var pby: i32[64] = [0; 64];
+    var pbz: i32[64] = [0; 64];
+    var steps_up: i32 = 0;
 
     loop {
         let f = get_frame(cur_d);
-        let sx = axis_step_at(cur_d, st.depth, dx, 0);
-        let sy = axis_step_at(cur_d, st.depth, dy, 1);
-        let sz = axis_step_at(cur_d, st.depth, dz, 2);
-        let nbx = f.bx + sx;
-        let nby = f.by + sy;
-        let nbz = f.bz + sz;
-        if nbx >= 0 && nbx < CHUNK_DIM && nby >= 0 && nby < CHUNK_DIM && nbz >= 0 && nbz < CHUNK_DIM {
+        let sx = f.bx + cx;
+        let sy = f.by + cy;
+        let sz = f.bz + cz;
+        let nbx = sx & 15;
+        let nby = sy & 15;
+        let nbz = sz & 15;
+        cx = if sx >= 0 { sx >> 4 } else { -(((-sx) + 15) >> 4) };
+        cy = if sy >= 0 { sy >> 4 } else { -(((-sy) + 15) >> 4) };
+        cz = if sz >= 0 { sz >> 4 } else { -(((-sz) + 15) >> 4) };
+        pbx[steps_up] = nbx;
+        pby[steps_up] = nby;
+        pbz[steps_up] = nbz;
+        if cx == 0 && cy == 0 && cz == 0 {
             anc_d = cur_d - 1;
             tbx = nbx;
             tby = nby;
             tbz = nbz;
             break;
         }
+        steps_up = steps_up + 1;
         cur_d = cur_d - 1;
-        if cur_d <= MAX_NEG_DEPTH {
+        if cur_d <= MAX_NEG_DEPTH || steps_up >= 64 {
             // Cosmic boundary: mark attempted so the streaming resolver won't retry
             st.neighbor_dx[slot] = 0;
             st.neighbor_dy[slot] = 0;
             st.neighbor_dz[slot] = 0;
+            st.neighbor_dirty[slot] = 0;
             return;
         }
         ensure_neg_frame_seed(cur_d);
@@ -2785,12 +2800,12 @@ fn resolve_neighbor_chunk(slot: i32, dx: i32, dy: i32, dz: i32) {
     var rblk: u8 = tblk;
     var rair: i32 = if tblk == BLK_AIR { anc_air_d + 1 } else { 0 };
 
+    var step: i32 = steps_up - 1;
     var wd: i32 = cur_d + 1;
-    while wd <= st.depth {
-        let wf = get_frame(wd);
-        let wbx = (wf.bx + axis_step_at(wd, st.depth, dx, 0) + CHUNK_DIM) & 15;
-        let wby = (wf.by + axis_step_at(wd, st.depth, dy, 1) + CHUNK_DIM) & 15;
-        let wbz = (wf.bz + axis_step_at(wd, st.depth, dz, 2) + CHUNK_DIM) & 15;
+    while step >= 0 {
+        let wbx = pbx[step];
+        let wby = pby[step];
+        let wbz = pbz[step];
         if rblk != BLK_AIR {
             generate_chunk_blocks_to(5, wd - 1, rbio, rblk, rseed, rair);
             rblk = dst_get_block(5, wbx, wby, wbz);
@@ -2800,14 +2815,13 @@ fn resolve_neighbor_chunk(slot: i32, dx: i32, dy: i32, dz: i32) {
         rbio = nbio;
         rair = if rblk == BLK_AIR { rair + 1 } else { 0 };
         wd = wd + 1;
+        step = step - 1;
     }
 
     generate_chunk_blocks_to(1000 + slot, st.depth, rbio, rblk, rseed, rair);
     st.neighbor_valid[slot] = 1;
     st.neighbor_biome[slot] = rbio;
-    if st.neighbor_fill[slot] == 0 {
-        st.neighbor_dirty[slot] = 0;
-    }
+    st.neighbor_dirty[slot] = 1;
     if dx >= -3 && dx <= 3 && dy >= -3 && dy <= 3 && dz >= -3 && dz <= 3 {
         st.neighbor_map[((dx + 3) * 7 + (dy + 3)) * 7 + (dz + 3)] = slot;
     }
@@ -2840,7 +2854,7 @@ fn world_block_rel(bx: i32, by: i32, bz: i32) -> u8 {
     return BLK_AIR;
 }
 
-fn load_current_chunk() {
+fn load_current_chunk_impl(use_shift: i32, sdx: i32, sdy: i32, sdz: i32) {
     clear_entities_and_shots();
     invalidate_inward_cache();
     st.chunk_rev = st.chunk_rev + 1;
@@ -2871,6 +2885,7 @@ fn load_current_chunk() {
         populate_interior_biome_entities(biome, st.depth);
     }
 
+
     // Populate 5 outward parent visibility layers (16x .. 1,048,576x) first so neighbor
     // resolution can fast-path reads directly from cached parent_blocks
     var pl: i32 = 0;
@@ -2893,17 +2908,72 @@ fn load_current_chunk() {
         }
         pl = pl + 1;
     }
+
     var mi: i32 = 0;
     while mi < 343 {
         st.neighbor_map[mi] = -1;
         mi = mi + 1;
     }
-    // Populate sibling neighbor chunks ring-by-ring out to view_chunk_radius (Xar renders a
-    // location's whole structure from its surrounding kilochunk; nearest rings first)
-    var nslot: i32 = 0;
+
+    let vr = clamp_i(st.view_chunk_radius, 1, 3);
+    if use_shift != 0 {
+        // Preserve already-loaded chunks in-place across same-depth chunk crossings!
+        var si: i32 = 0;
+        while si < MAX_NEIGHBORS {
+            if st.neighbor_valid[si] != 0 {
+                let ndx = st.neighbor_dx[si] - sdx;
+                let ndy = st.neighbor_dy[si] - sdy;
+                let ndz = st.neighbor_dz[si] - sdz;
+                let ax = if ndx < 0 { -ndx } else { ndx };
+                let ay = if ndy < 0 { -ndy } else { ndy };
+                let az = if ndz < 0 { -ndz } else { ndz };
+                let mx = if ax >= ay && ax >= az { ax } else if ay >= az { ay } else { az };
+                if mx >= 1 && mx <= vr {
+                    st.neighbor_dx[si] = ndx;
+                    st.neighbor_dy[si] = ndy;
+                    st.neighbor_dz[si] = ndz;
+                    st.neighbor_dirty[si] = 1;
+                    st.neighbor_map[((ndx + 3) * 7 + (ndy + 3)) * 7 + (ndz + 3)] = si;
+                } else {
+                    st.neighbor_valid[si] = 0;
+                    st.neighbor_fill[si] = 0;
+                    st.neighbor_dirty[si] = 0;
+                    st.neighbor_dx[si] = 0;
+                    st.neighbor_dy[si] = 0;
+                    st.neighbor_dz[si] = 0;
+                }
+            } else {
+                st.neighbor_fill[si] = 0;
+                st.neighbor_dirty[si] = 0;
+                st.neighbor_dx[si] = 0;
+                st.neighbor_dy[si] = 0;
+                st.neighbor_dz[si] = 0;
+            }
+            si = si + 1;
+        }
+    } else {
+        var si: i32 = 0;
+        while si < MAX_NEIGHBORS {
+            st.neighbor_valid[si] = 0;
+            st.neighbor_fill[si] = 0;
+            st.neighbor_dirty[si] = 0;
+            st.neighbor_dx[si] = 0;
+            st.neighbor_dy[si] = 0;
+            st.neighbor_dz[si] = 0;
+            si = si + 1;
+        }
+    }
+
+    // Collect missing neighbor coordinates sorted by ring (1..vr) and Euclidean d2 ascending
+    var mdx: i32[343] = [0; 343];
+    var mdy: i32[343] = [0; 343];
+    var mdz: i32[343] = [0; 343];
+    var md2: i32[343] = [0; 343];
+    var mring: i32[343] = [0; 343];
+    var m_cnt: i32 = 0;
+
     var ring: i32 = 1;
-    while ring <= 3 {
-        if ring > st.view_chunk_radius { break; }
+    while ring <= vr {
         var odx: i32 = -ring;
         while odx <= ring {
             var ody: i32 = -ring;
@@ -2914,19 +2984,16 @@ fn load_current_chunk() {
                     let ay = if ody < 0 { -ody } else { ody };
                     let az = if odz < 0 { -odz } else { odz };
                     let mx = if ax >= ay && ax >= az { ax } else if ay >= az { ay } else { az };
-                    if mx == ring && nslot < MAX_NEIGHBORS {
-                        if ring == 1 {
-                            resolve_neighbor_chunk(nslot, odx, ody, odz);
-                        } else {
-                            // Queue far rings: streamed in per frame (no chunk-crossing hitch)
-                            st.neighbor_valid[nslot] = 0;
-                            st.neighbor_dx[nslot] = odx;
-                            st.neighbor_dy[nslot] = ody;
-                            st.neighbor_dz[nslot] = odz;
-                            st.neighbor_fill[nslot] = 0;
-                            st.neighbor_dirty[nslot] = 0;
+                    if mx == ring {
+                        let existing = st.neighbor_map[((odx + 3) * 7 + (ody + 3)) * 7 + (odz + 3)];
+                        if existing < 0 && m_cnt < MAX_NEIGHBORS {
+                            mdx[m_cnt] = odx;
+                            mdy[m_cnt] = ody;
+                            mdz[m_cnt] = odz;
+                            md2[m_cnt] = odx * odx + ody * ody + odz * odz;
+                            mring[m_cnt] = ring;
+                            m_cnt = m_cnt + 1;
                         }
-                        nslot = nslot + 1;
                     }
                     odz = odz + 1;
                 }
@@ -2936,33 +3003,125 @@ fn load_current_chunk() {
         }
         ring = ring + 1;
     }
-    while nslot < MAX_NEIGHBORS {
-        st.neighbor_valid[nslot] = 0;
-        st.neighbor_dx[nslot] = 0;
-        st.neighbor_dy[nslot] = 0;
-        st.neighbor_dz[nslot] = 0;
-        st.neighbor_fill[nslot] = 0;
-        st.neighbor_dirty[nslot] = 0;
-        nslot = nslot + 1;
+
+    // Insertion sort missing slots by (ring, d2) ascending for radial loading
+    var k: i32 = 1;
+    while k < m_cnt {
+        let kx = mdx[k];
+        let ky = mdy[k];
+        let kz = mdz[k];
+        let kd = md2[k];
+        let kr = mring[k];
+        let kkey = kr * 100 + kd;
+        var p: i32 = k - 1;
+        while p >= 0 && (mring[p] * 100 + md2[p]) > kkey {
+            mdx[p + 1] = mdx[p];
+            mdy[p + 1] = mdy[p];
+            mdz[p + 1] = mdz[p];
+            md2[p + 1] = md2[p];
+            mring[p + 1] = mring[p];
+            p = p - 1;
+        }
+        mdx[p + 1] = kx;
+        mdy[p + 1] = ky;
+        mdz[p + 1] = kz;
+        md2[p + 1] = kd;
+        mring[p + 1] = kr;
+        k = k + 1;
+    }
+
+    // Assign missing coordinates into free neighbor slots
+    var free_scan: i32 = 0;
+    k = 0;
+    while k < m_cnt {
+        while free_scan < MAX_NEIGHBORS && st.neighbor_valid[free_scan] != 0 {
+            free_scan = free_scan + 1;
+        }
+        if free_scan >= MAX_NEIGHBORS { break; }
+        if mring[k] == 1 {
+            resolve_neighbor_chunk(free_scan, mdx[k], mdy[k], mdz[k]);
+        } else {
+            st.neighbor_valid[free_scan] = 0;
+            st.neighbor_dx[free_scan] = mdx[k];
+            st.neighbor_dy[free_scan] = mdy[k];
+            st.neighbor_dz[free_scan] = mdz[k];
+            st.neighbor_fill[free_scan] = 0;
+            st.neighbor_dirty[free_scan] = 0;
+        }
+        free_scan = free_scan + 1;
+        k = k + 1;
     }
 }
 
+fn load_current_chunk() {
+    load_current_chunk_impl(0, 0, 0, 0);
+}
+
+fn load_current_chunk_shifted(sdx: i32, sdy: i32, sdz: i32) {
+    load_current_chunk_impl(1, sdx, sdy, sdz);
+}
+
 // ---------------------------------------------------------------------------
-// Streaming resolver: generates up to max_n queued far-ring neighbor chunks.
-// Called per frame from the mobile tick; returns how many slots were filled.
+// Camera-forward + radial streaming resolver for queued far-ring neighbors.
 // ---------------------------------------------------------------------------
 fn resolve_pending_neighbors(max_n: i32) -> i32 {
-    var done: i32 = 0;
+    let lim = clamp_i(max_n, 1, 24);
+    let cp = fcos(st.pitch);
+    let fx = cp * fcos(st.yaw);
+    let fy = fsin(st.pitch);
+    let fz = cp * fsin(st.yaw);
+
+    var best_s: i32[24] = [-1; 24];
+    var best_sc: f64[24] = [1.0e18; 24];
+    var pick_cnt: i32 = 0;
+
     var s: i32 = 0;
-    while s < MAX_NEIGHBORS && done < max_n {
-        if st.neighbor_valid[s] == 0 &&
-           (st.neighbor_dx[s] != 0 || st.neighbor_dy[s] != 0 || st.neighbor_dz[s] != 0) {
-            resolve_neighbor_chunk(s, st.neighbor_dx[s], st.neighbor_dy[s], st.neighbor_dz[s]);
-            done = done + 1;
+    while s < MAX_NEIGHBORS {
+        if st.neighbor_valid[s] == 0 {
+            let dx = st.neighbor_dx[s];
+            let dy = st.neighbor_dy[s];
+            let dz = st.neighbor_dz[s];
+            if dx != 0 || dy != 0 || dz != 0 {
+                let ax = if dx < 0 { -dx } else { dx };
+                let ay = if dy < 0 { -dy } else { dy };
+                let az = if dz < 0 { -dz } else { dz };
+                let rmax = if ax >= ay && ax >= az { ax } else if ay >= az { ay } else { az };
+                let d2 = dx * dx + dy * dy + dz * dz;
+                let inv_len = 1.0 / fsqrt(d2 as f64);
+                let fdot = ((dx as f64) * fx + (dy as f64) * fy + (dz as f64) * fz) * inv_len;
+                let sc = (rmax as f64) * 18.0 + (d2 as f64) * 1.5 - fdot * 16.0;
+                if pick_cnt < lim {
+                    var p: i32 = pick_cnt - 1;
+                    while p >= 0 && best_sc[p] > sc {
+                        best_s[p + 1] = best_s[p];
+                        best_sc[p + 1] = best_sc[p];
+                        p = p - 1;
+                    }
+                    best_s[p + 1] = s;
+                    best_sc[p + 1] = sc;
+                    pick_cnt = pick_cnt + 1;
+                } else if sc < best_sc[lim - 1] {
+                    var p: i32 = lim - 2;
+                    while p >= 0 && best_sc[p] > sc {
+                        best_s[p + 1] = best_s[p];
+                        best_sc[p + 1] = best_sc[p];
+                        p = p - 1;
+                    }
+                    best_s[p + 1] = s;
+                    best_sc[p + 1] = sc;
+                }
+            }
         }
         s = s + 1;
     }
-    return done;
+
+    var i: i32 = 0;
+    while i < pick_cnt {
+        let slot = best_s[i];
+        resolve_neighbor_chunk(slot, st.neighbor_dx[slot], st.neighbor_dy[slot], st.neighbor_dz[slot]);
+        i = i + 1;
+    }
+    return pick_cnt;
 }
 
 // ---------------------------------------------------------------------------
@@ -3756,7 +3915,7 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
             wd = wd + 1;
         }
 
-        load_current_chunk();
+        load_current_chunk_shifted(sdx, sdy, sdz);
         st.px = nx_w;
         st.py = ny_w;
         st.pz = nz_w;
@@ -3777,7 +3936,7 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
                     bx: target_bx, by: target_by, bz: target_bz,
                     biome: top_bio, parent_block: tblk, seed: top_seed
                 });
-                load_current_chunk();
+                load_current_chunk_shifted(sdx, sdy, sdz);
                 st.px = nx_w;
                 st.py = ny_w;
                 st.pz = nz_w;
@@ -3797,7 +3956,7 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
                     bx: target_bx, by: target_by, bz: target_bz,
                     biome: top_bio, parent_block: tblk, seed: top_seed
                 });
-                load_current_chunk();
+                load_current_chunk_shifted(sdx, sdy, sdz);
                 var sx: f64 = 8.0;
                 var sy: f64 = 8.0;
                 var sz: f64 = 8.0;
@@ -3862,7 +4021,7 @@ fn step_air_single_axis(axis: i32, sdir: i32, cand_x: f64, cand_y: f64, cand_z: 
                     });
                     wd = wd + 1;
                 }
-                load_current_chunk();
+                load_current_chunk_shifted(sdx, sdy, sdz);
                 if clear_dst {
                     st.px = nx_w;
                     st.py = ny_w;
