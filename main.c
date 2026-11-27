@@ -625,13 +625,22 @@ static int draw_char_bmp(int x, int y, int scale, char c) {
     for (int row = 0; row < 8; row++) {
         unsigned char bits = glyph[row];
         if (!bits) continue;
-        for (int col = 0; col < 8; col++) {
-            if ((bits >> col) & 1) {
-                if (col > maxcol) maxcol = col;
-                CNFGTackRectangle(
-                    (short)(x + col * scale), (short)(y + row * scale),
-                    (short)(x + (col + 1) * scale), (short)(y + (row + 1) * scale));
+        short ry0 = (short)(y + row * scale);
+        short ry1 = (short)(ry0 + scale);
+        int col = 0;
+        while (col < 8) {
+            if (!((bits >> col) & 1)) {
+                col++;
+                continue;
             }
+            int run_start = col;
+            while (col < 8 && ((bits >> col) & 1)) {
+                col++;
+            }
+            if (col - 1 > maxcol) maxcol = col - 1;
+            CNFGTackRectangle(
+                (short)(x + run_start * scale), ry0,
+                (short)(x + col * scale), ry1);
         }
     }
     return (maxcol + 2) * scale;                // glyph width + 1 cell gap

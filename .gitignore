@@ -25,3 +25,6 @@ AndroidManifest.xml
 
 # Bundle output (device-local)
 bundle-android.txt
+
+# Patch files — do not host on GitHub
+im.patch

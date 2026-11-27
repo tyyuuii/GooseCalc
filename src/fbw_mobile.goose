@@ -906,15 +906,12 @@ fn sync_chunks_to_gl() {
     } else {
         // Streaming light pass: push only slots whose data changed this frame
         var sd: i32 = 0;
-        var pushed: i32 = 0;
         while sd < MAX_NEIGHBORS {
             if st.neighbor_dirty[sd] != 0 {
                 push_neighbor_slot(sd);
-                pushed = pushed + 1;
             }
             sd = sd + 1;
         }
-        if pushed > 0 { fbw_gl_mark_chunks_dirty(); }
         return;
     }
 
@@ -1008,19 +1005,7 @@ fn l1_blk_at(x: i32, y: i32, z: i32) -> u8 {
 }
 
 fn is_l1_covered_by_neighbor(x: i32, y: i32, z: i32, hx: i32, hy: i32, hz: i32) -> i32 {
-    let st = core();
-    let dx = x - hx;
-    let dy = y - hy;
-    let dz = z - hz;
-    var nb: i32 = 0;
-    while nb < MAX_NEIGHBORS {
-        if st.neighbor_valid[nb] != 0 &&
-           st.neighbor_dx[nb] == dx && st.neighbor_dy[nb] == dy && st.neighbor_dz[nb] == dz {
-            return 1;
-        }
-        nb = nb + 1;
-    }
-    return 0;
+    return if neighbor_slot_at_rel(x - hx, y - hy, z - hz) >= 0 { 1 } else { 0 };
 }
 
 fn layer1_block_exposed(x: i32, y: i32, z: i32, hx: i32, hy: i32, hz: i32) -> i32 {
@@ -1749,7 +1734,7 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
         drain_pending_sfx();
         let _ = resolve_pending_neighbors(8);  // stream far-ring chunks (8/frame)
         g_mob.autosave_ms = g_mob.autosave_ms + dt_ms;
-        if st.autosave_dirty != 0 || g_mob.autosave_ms >= 15000 {
+        if (st.autosave_dirty != 0 && g_mob.autosave_ms >= 3500) || g_mob.autosave_ms >= 15000 {
             let _ = fbw_save_game();
         }
     } else {

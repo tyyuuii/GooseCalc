@@ -262,6 +262,7 @@ root struct fbw_state {
     neighbor_biome: i32[342],
     neighbor_fill: i32[342],  // non-air block count per neighbor slot (sync culling)
     neighbor_dirty: i32[342], // slot needs GL re-push (streaming sync)
+    neighbor_map: i32[343],   // 7x7x7 (dx,dy,dz in -3..3) -> slot or -1
     inward_blocks: u8[1048576], // 256-slot * CHUNK_VOL multi-layer 3D sub-voxel cache
     inward_seeds: u64[256],
     inward_blks: u8[256],
@@ -2606,20 +2607,26 @@ fn populate_air_subchunk_entities(depth: i32, seed: u64) {
 
 fn generate_chunk_blocks_to(dst_layer: i32, depth: i32, biome: i32, parent_blk: u8, seed: u64, air_depth: i32) {
     var i: i32 = 0;
-    while i < CHUNK_VOL {
-        if dst_layer < 0 { st.blocks[i] = BLK_AIR; }
-        else if dst_layer == 5 { st.scratch_blocks[i] = BLK_AIR; }
-        else if dst_layer >= 1000 {
-            let nb = dst_layer - 1000;
-            if nb >= 0 && nb < MAX_NEIGHBORS { st.neighbor_blocks[nb * CHUNK_VOL + i] = BLK_AIR; }
-            if nb >= 0 && nb < MAX_NEIGHBORS { st.neighbor_fill[nb] = 0; }
-        } else if dst_layer >= 10 {
-            let slot = dst_layer - 10;
-            if slot >= 0 && slot < 256 { st.inward_blocks[slot * CHUNK_VOL + i] = BLK_AIR; }
-        } else if dst_layer >= 0 && dst_layer < 5 {
-            st.parent_blocks[dst_layer * CHUNK_VOL + i] = BLK_AIR;
+    if dst_layer < 0 {
+        while i < CHUNK_VOL { st.blocks[i] = BLK_AIR; i = i + 1; }
+    } else if dst_layer == 5 {
+        while i < CHUNK_VOL { st.scratch_blocks[i] = BLK_AIR; i = i + 1; }
+    } else if dst_layer >= 1000 {
+        let nb = dst_layer - 1000;
+        if nb >= 0 && nb < MAX_NEIGHBORS {
+            st.neighbor_fill[nb] = 0;
+            let base = nb * CHUNK_VOL;
+            while i < CHUNK_VOL { st.neighbor_blocks[base + i] = BLK_AIR; i = i + 1; }
         }
-        i = i + 1;
+    } else if dst_layer >= 10 {
+        let slot = dst_layer - 10;
+        if slot >= 0 && slot < 256 {
+            let base = slot * CHUNK_VOL;
+            while i < CHUNK_VOL { st.inward_blocks[base + i] = BLK_AIR; i = i + 1; }
+        }
+    } else if dst_layer >= 0 && dst_layer < 5 {
+        let base = dst_layer * CHUNK_VOL;
+        while i < CHUNK_VOL { st.parent_blocks[base + i] = BLK_AIR; i = i + 1; }
     }
 
     if parent_blk == BLK_AIR {
@@ -2640,12 +2647,15 @@ fn generate_chunk_blocks_to(dst_layer: i32, depth: i32, biome: i32, parent_blk: 
         generate_interior_biome_blocks(dst_layer, biome, depth, seed);
     }
 
-    i = 0;
-    while i < MAX_DELTAS {
-        if st.deltas[i].used != 0 && st.deltas[i].seed == seed {
-            dst_set_block(dst_layer, st.deltas[i].bx, st.deltas[i].by, st.deltas[i].bz, st.deltas[i].blk);
+    if st.delta_head != 0 || st.deltas[0].used != 0 {
+        i = 0;
+        while i < MAX_DELTAS {
+            if st.deltas[i].used == 0 { break; }
+            if st.deltas[i].seed == seed {
+                dst_set_block(dst_layer, st.deltas[i].bx, st.deltas[i].by, st.deltas[i].bz, st.deltas[i].blk);
+            }
+            i = i + 1;
         }
-        i = i + 1;
     }
 }
 
@@ -2761,8 +2771,14 @@ fn resolve_neighbor_chunk(slot: i32, dx: i32, dy: i32, dz: i32) {
     ensure_neg_frame_seed(anc_d);
     let anc_f = get_frame(anc_d);
     let anc_air_d = compute_air_depth(anc_d);
-    generate_chunk_blocks_to(5, anc_d, anc_f.biome, anc_f.parent_block, anc_f.seed, anc_air_d);
-    let tblk = dst_get_block(5, tbx, tby, tbz);
+    let p_off = st.depth - 1 - anc_d;
+    var tblk: u8 = BLK_AIR;
+    if p_off >= 0 && p_off < 5 && st.parent_valid[p_off] != 0 {
+        tblk = st.parent_blocks[p_off * CHUNK_VOL + b_idx(tbx, tby, tbz)];
+    } else {
+        generate_chunk_blocks_to(5, anc_d, anc_f.biome, anc_f.parent_block, anc_f.seed, anc_air_d);
+        tblk = dst_get_block(5, tbx, tby, tbz);
+    }
 
     var rseed: u64 = resolve_child_frame_seed(anc_f.seed, anc_d, tbx, tby, tbz, tblk);
     var rbio: i32 = resolve_child_frame_biome(anc_f.seed, anc_d, anc_f.biome, tbx, tby, tbz, tblk, -1);
@@ -2789,6 +2805,22 @@ fn resolve_neighbor_chunk(slot: i32, dx: i32, dy: i32, dz: i32) {
     generate_chunk_blocks_to(1000 + slot, st.depth, rbio, rblk, rseed, rair);
     st.neighbor_valid[slot] = 1;
     st.neighbor_biome[slot] = rbio;
+    if st.neighbor_fill[slot] == 0 {
+        st.neighbor_dirty[slot] = 0;
+    }
+    if dx >= -3 && dx <= 3 && dy >= -3 && dy <= 3 && dz >= -3 && dz <= 3 {
+        st.neighbor_map[((dx + 3) * 7 + (dy + 3)) * 7 + (dz + 3)] = slot;
+    }
+}
+
+fn neighbor_slot_at_rel(dx: i32, dy: i32, dz: i32) -> i32 {
+    if dx < -3 || dx > 3 || dy < -3 || dy > 3 || dz < -3 || dz > 3 { return -1; }
+    let s = st.neighbor_map[((dx + 3) * 7 + (dy + 3)) * 7 + (dz + 3)];
+    if s >= 0 && s < MAX_NEIGHBORS && st.neighbor_valid[s] != 0 &&
+       st.neighbor_dx[s] == dx && st.neighbor_dy[s] == dy && st.neighbor_dz[s] == dz {
+        return s;
+    }
+    return -1;
 }
 
 fn world_block_rel(bx: i32, by: i32, bz: i32) -> u8 {
@@ -2801,13 +2833,9 @@ fn world_block_rel(bx: i32, by: i32, bz: i32) -> u8 {
     let ox: i32 = if bx >= 48 { 3 } else if bx >= 32 { 2 } else if bx >= CHUNK_DIM { 1 } else if bx >= 0 { 0 } else if bx >= -16 { -1 } else if bx >= -32 { -2 } else { -3 };
     let oy: i32 = if by >= 48 { 3 } else if by >= 32 { 2 } else if by >= CHUNK_DIM { 1 } else if by >= 0 { 0 } else if by >= -16 { -1 } else if by >= -32 { -2 } else { -3 };
     let oz: i32 = if bz >= 48 { 3 } else if bz >= 32 { 2 } else if bz >= CHUNK_DIM { 1 } else if bz >= 0 { 0 } else if bz >= -16 { -1 } else if bz >= -32 { -2 } else { -3 };
-    var s: i32 = 0;
-    while s < MAX_NEIGHBORS {
-        if st.neighbor_valid[s] != 0 &&
-           st.neighbor_dx[s] == ox && st.neighbor_dy[s] == oy && st.neighbor_dz[s] == oz {
-            return st.neighbor_blocks[s * CHUNK_VOL + b_idx(bx - ox * 16, by - oy * 16, bz - oz * 16)];
-        }
-        s = s + 1;
+    let s = neighbor_slot_at_rel(ox, oy, oz);
+    if s >= 0 {
+        return st.neighbor_blocks[s * CHUNK_VOL + b_idx(bx - ox * 16, by - oy * 16, bz - oz * 16)];
     }
     return BLK_AIR;
 }
@@ -2843,6 +2871,33 @@ fn load_current_chunk() {
         populate_interior_biome_entities(biome, st.depth);
     }
 
+    // Populate 5 outward parent visibility layers (16x .. 1,048,576x) first so neighbor
+    // resolution can fast-path reads directly from cached parent_blocks
+    var pl: i32 = 0;
+    while pl < 5 {
+        let pd = st.depth - 1 - pl;
+        if pd < MAX_NEG_DEPTH {
+            st.parent_valid[pl] = 0;
+        } else {
+            ensure_neg_frame_seed(pd);
+            let child_f = get_frame(pd + 1);
+            let pf = get_frame(pd);
+            st.parent_valid[pl] = 1;
+            st.parent_bx[pl] = child_f.bx;
+            st.parent_by[pl] = child_f.by;
+            st.parent_bz[pl] = child_f.bz;
+            st.parent_biome[pl] = pf.biome;
+            st.parent_depth[pl] = pd;
+            st.parent_seed[pl] = pf.seed;
+            generate_chunk_blocks_to(pl, pd, pf.biome, pf.parent_block, pf.seed, compute_air_depth(pd));
+        }
+        pl = pl + 1;
+    }
+    var mi: i32 = 0;
+    while mi < 343 {
+        st.neighbor_map[mi] = -1;
+        mi = mi + 1;
+    }
     // Populate sibling neighbor chunks ring-by-ring out to view_chunk_radius (Xar renders a
     // location's whole structure from its surrounding kilochunk; nearest rings first)
     var nslot: i32 = 0;
@@ -2869,7 +2924,7 @@ fn load_current_chunk() {
                             st.neighbor_dy[nslot] = ody;
                             st.neighbor_dz[nslot] = odz;
                             st.neighbor_fill[nslot] = 0;
-                            st.neighbor_dirty[nslot] = 1;
+                            st.neighbor_dirty[nslot] = 0;
                         }
                         nslot = nslot + 1;
                     }
@@ -2887,29 +2942,8 @@ fn load_current_chunk() {
         st.neighbor_dy[nslot] = 0;
         st.neighbor_dz[nslot] = 0;
         st.neighbor_fill[nslot] = 0;
+        st.neighbor_dirty[nslot] = 0;
         nslot = nslot + 1;
-    }
-
-    // Populate 5 outward parent visibility layers (16x .. 1,048,576x) for colossal scale rendering
-    var pl: i32 = 0;
-    while pl < 5 {
-        let pd = st.depth - 1 - pl;
-        if pd < MAX_NEG_DEPTH {
-            st.parent_valid[pl] = 0;
-        } else {
-            ensure_neg_frame_seed(pd);
-            let child_f = get_frame(pd + 1);
-            let pf = get_frame(pd);
-            st.parent_valid[pl] = 1;
-            st.parent_bx[pl] = child_f.bx;
-            st.parent_by[pl] = child_f.by;
-            st.parent_bz[pl] = child_f.bz;
-            st.parent_biome[pl] = pf.biome;
-            st.parent_depth[pl] = pd;
-            st.parent_seed[pl] = pf.seed;
-            generate_chunk_blocks_to(pl, pd, pf.biome, pf.parent_block, pf.seed, compute_air_depth(pd));
-        }
-        pl = pl + 1;
     }
 }
 
