@@ -367,9 +367,6 @@ root struct fbw_state {
     // Feedback / Flash / Lore Tome
     flash_ms: i32,
     flash_rgb: u32,
-    trans_timer_ms: i32,
-    trans_total_ms: i32,
-    trans_dir: i32,
     msg_ms: i32,
     msg_len: i32,
     msg_buf: u8[128],
@@ -3283,11 +3280,8 @@ fn shrink_into_ex(bx: i32, by: i32, bz: i32, target_blk: u8, forced_biome: i32, 
         st.vx = 0.0; st.vy = 0.0; st.vz = 0.0;
     }
     st.ring_cd_ms = 260;
-    st.trans_timer_ms = 380;
-    st.trans_total_ms = 380;
-    st.trans_dir = steps;
-    st.flash_ms = 380;
-    st.flash_rgb = if steps >= 2 { pack_rgb(235, 60, 200) } else { pack_rgb(40, 235, 130) };
+    st.flash_ms = 200;
+    st.flash_rgb = pack_rgb(40, 235, 130);
     st.autosave_dirty = 1;
     queue_sfx(SFX_WARP);
     if target_blk == BLK_AIR {
@@ -3413,10 +3407,7 @@ fn grow_out_axis(exit_x: f64, exit_y: f64, exit_z: f64) {
         st.vx = 0.0; st.vy = 0.0; st.vz = 0.0;
     }
     st.ring_cd_ms = 260;
-    st.trans_timer_ms = 380;
-    st.trans_total_ms = 380;
-    st.trans_dir = -1;
-    st.flash_ms = 380;
+    st.flash_ms = 200;
     st.flash_rgb = pack_rgb(245, 70, 70);
     st.autosave_dirty = 1;
     queue_sfx(SFX_WARP);
@@ -3556,9 +3547,6 @@ fn init_new_game() {
     st.k_rescued = 0;
     st.telekinesis_ms = 0;
     st.black_hole_drive_ms = 0;
-    st.trans_timer_ms = 0;
-    st.trans_total_ms = 380;
-    st.trans_dir = 0;
     st.quasar_drive_ms = 0;
     st.tome_read_mask = 0;
 
@@ -5702,7 +5690,6 @@ fn step_simulation(dt_ms: i32) {
     if st.ring_cd_ms > 0 { st.ring_cd_ms = st.ring_cd_ms - dt_ms; if st.ring_cd_ms < 0 { st.ring_cd_ms = 0; } }
     if st.beam_timer_ms > 0 { st.beam_timer_ms = st.beam_timer_ms - dt_ms; if st.beam_timer_ms < 0 { st.beam_timer_ms = 0; } }
     if st.flash_ms > 0 { st.flash_ms = st.flash_ms - dt_ms; if st.flash_ms < 0 { st.flash_ms = 0; } }
-    if st.trans_timer_ms > 0 { st.trans_timer_ms = st.trans_timer_ms - dt_ms; if st.trans_timer_ms < 0 { st.trans_timer_ms = 0; } }
     if st.msg_ms > 0 { st.msg_ms = st.msg_ms - dt_ms; if st.msg_ms < 0 { st.msg_ms = 0; } }
     if st.telekinesis_ms > 0 { st.telekinesis_ms = st.telekinesis_ms - dt_ms; if st.telekinesis_ms < 0 { st.telekinesis_ms = 0; } }
     if st.turning_ms > 0 { st.turning_ms = st.turning_ms - dt_ms; if st.turning_ms < 0 { st.turning_ms = 0; } }

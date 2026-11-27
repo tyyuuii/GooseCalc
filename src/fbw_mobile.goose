@@ -1761,76 +1761,14 @@ fn fbw_mobile_tick_and_draw(w: i32, h: i32) {
     sync_chunks_to_gl();
     sync_inward_to_gl();
     sync_dynamic_to_gl();
-    var cam_px: f64 = st.px;
-    var cam_py: f64 = st.py;
-    var cam_pz: f64 = st.pz;
-    var cam_pitch: f64 = st.pitch;
-    var cam_roll: f64 = st.roll;
-
-    if st.trans_timer_ms > 0 && st.trans_total_ms > 0 {
-        let rem = (st.trans_timer_ms as f64) / (st.trans_total_ms as f64);
-        let progress = 1.0 - rem;
-        let ease = rem * rem * (3.0 - 2.0 * rem);
-        let wave = fsin(progress * 3.14159265);
-
-        let cp = fcos(st.pitch);
-        let fx = cp * fcos(st.yaw);
-        let fy = fsin(st.pitch);
-        let fz = cp * fsin(st.yaw);
-
-        if st.trans_dir > 0 {
-            // Shrink: smooth forward plunge dive into child fractal world
-            let max_d = if st.trans_dir >= 2 { 2.4 } else { 1.6 };
-            var safe_d = max_d;
-            var pt: f64 = 0.4;
-            while pt <= max_d {
-                let bx = ffloor(st.px - fx * pt);
-                let by = ffloor(st.py - fy * pt);
-                let bz = ffloor(st.pz - fz * pt);
-                if world_block_rel(bx, by, bz) != BLK_AIR {
-                    safe_d = pt - 0.25;
-                    if safe_d < 0.0 { safe_d = 0.0; }
-                    break;
-                }
-                pt = pt + 0.35;
-            }
-            cam_px = st.px - fx * (safe_d * ease);
-            cam_py = st.py - fy * (safe_d * ease);
-            cam_pz = st.pz - fz * (safe_d * ease);
-            cam_roll = st.roll + wave * 0.09 * (if st.trans_dir >= 2 { 1.4 } else { 1.0 });
-            cam_pitch = st.pitch - wave * 0.035;
-        } else if st.trans_dir < 0 {
-            // Grow: smooth outward reverse pull-out into macro world
-            let max_d = 1.4;
-            var safe_d = max_d;
-            var pt: f64 = 0.4;
-            while pt <= max_d {
-                let bx = ffloor(st.px + fx * pt);
-                let by = ffloor(st.py + fy * pt);
-                let bz = ffloor(st.pz + fz * pt);
-                if world_block_rel(bx, by, bz) != BLK_AIR {
-                    safe_d = pt - 0.25;
-                    if safe_d < 0.0 { safe_d = 0.0; }
-                    break;
-                }
-                pt = pt + 0.35;
-            }
-            cam_px = st.px + fx * (safe_d * ease);
-            cam_py = st.py + fy * (safe_d * ease);
-            cam_pz = st.pz + fz * (safe_d * ease);
-            cam_roll = st.roll - wave * 0.09;
-            cam_pitch = st.pitch + wave * 0.035;
-        }
-    }
-
     fbw_gl_set_viewport(w, h, st.depth, cur_biome(), st.flash_rgb as! i32, st.flash_ms);
     fbw_gl_set_camera(
-        (cam_px * 1000.0) as! i32,
-        (cam_py * 1000.0) as! i32,
-        (cam_pz * 1000.0) as! i32,
+        (st.px * 1000.0) as! i32,
+        (st.py * 1000.0) as! i32,
+        (st.pz * 1000.0) as! i32,
         (st.yaw * 1000.0) as! i32,
-        (cam_pitch * 1000.0) as! i32,
-        (cam_roll * 1000.0) as! i32,
+        (st.pitch * 1000.0) as! i32,
+        (st.roll * 1000.0) as! i32,
         st.anim_ms as! i32
     );
     fbw_gl_render_3d();
