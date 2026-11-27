@@ -5118,28 +5118,74 @@ fn tome_body_line(biome: i32, row: i32) -> const u8[:] {
     return "Once The Singularity falls, touch Friend 'K' [USE] to win!";
 }
 
+fn has_clear_los(x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64) -> i32 {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let dz = z1 - z0;
+    let d = fsqrt(dx * dx + dy * dy + dz * dz);
+    if d <= 0.35 { return 1; }
+    let inv_d = 1.0 / d;
+    let rx = dx * inv_d;
+    let ry = dy * inv_d;
+    let rz = dz * inv_d;
+    var t: f64 = 0.25;
+    let limit = d - 0.20;
+    while t < limit {
+        let bx = ffloor(x0 + rx * t);
+        let by = ffloor(y0 + ry * t);
+        let bz = ffloor(z0 + rz * t);
+        if world_block_rel(bx, by, bz) != BLK_AIR {
+            return 0;
+        }
+        t = t + 0.20;
+    }
+    return 1;
+}
+
 fn trigger_telekinesis() {
-    st.telekinesis_ms = 420;
+    if st.screen != SCREEN_PLAY || st.hp <= 0 || st.telekinesis_ms > 0 {
+        return;
+    }
     var pulled: i32 = 0;
+    var blocked: i32 = 0;
     var i: i32 = 0;
     while i < MAX_ENTITIES {
         if st.entities[i].active != 0 && st.entities[i].kind >= ENT_GOLD && st.entities[i].kind <= ENT_KEY {
-            let dx = st.px - st.entities[i].x;
-            let dy = st.py - st.entities[i].y;
-            let dz = st.pz - st.entities[i].z;
+            let ex = st.entities[i].x;
+            let ey = st.entities[i].y;
+            let ez = st.entities[i].z;
+            let dx = st.px - ex;
+            let dy = st.py - ey;
+            let dz = st.pz - ez;
             let d = fsqrt(dx * dx + dy * dy + dz * dz);
-            if d > 0.2 && d < 14.0 {
-                st.entities[i].x = st.px - (dx / d) * 0.4;
-                st.entities[i].y = st.py - (dy / d) * 0.4;
-                st.entities[i].z = st.pz - (dz / d) * 0.4;
-                pulled = pulled + 1;
+            if d > 0.25 && d <= 10.5 {
+                if has_clear_los(st.px, st.py, st.pz, ex, ey, ez) != 0 {
+                    let tx = st.px - (dx / d) * 0.45;
+                    let ty = st.py - (dy / d) * 0.45;
+                    let tz = st.pz - (dz / d) * 0.45;
+                    if world_block_rel(ffloor(tx), ffloor(ty), ffloor(tz)) == BLK_AIR {
+                        st.entities[i].x = tx;
+                        st.entities[i].y = ty;
+                        st.entities[i].z = tz;
+                    } else {
+                        st.entities[i].x = st.px;
+                        st.entities[i].y = st.py;
+                        st.entities[i].z = st.pz;
+                    }
+                    pulled = pulled + 1;
+                } else {
+                    blocked = blocked + 1;
+                }
             }
         }
         i = i + 1;
     }
+    st.telekinesis_ms = if pulled > 0 { 800 } else { 420 };
     if pulled > 0 {
         queue_sfx(SFX_PICKUP);
         set_status_msg("Telekinesis pulled nearby pickups!", 1200);
+    } else if blocked > 0 {
+        set_status_msg("Telekinesis blocked — clear line of sight required.", 1100);
     } else {
         set_status_msg("Telekinesis pulse — no loose pickups in range.", 1000);
     }
